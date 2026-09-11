@@ -1,1 +1,48 @@
+name: Build Android APK
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Find ZIP
+        run: |
+          echo "Files in repository:"
+          find . -maxdepth 2 -type f
+          echo "ZIP files:"
+          find . -maxdepth 2 -name "*.zip"
+
+      - name: Extract project
+        run: |
+          mkdir project
+          unzip -q ./*.zip -d project
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        working-directory: project
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CryptoPulse-debug-apk
+          path: project/app/build/outputs/apk/debug/*.apk
