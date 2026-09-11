@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Diagnose CryptoPulse
 
 on:
   workflow_dispatch:
@@ -7,53 +7,27 @@ on:
       - main
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Check ZIP
+      - name: Show repository
         run: |
-          echo "=== Repository files ==="
-          find . -maxdepth 2 -type f -print
-          echo "=== ZIP files ==="
-          find . -type f -name "*.zip" -print
+          echo "===== ROOT ====="
+          pwd
+          ls -la
+          echo "===== ALL FILES ====="
+          find . -maxdepth 3 -type f -print
 
-      - name: Extract project
+      - name: Find ZIP
         run: |
-          ZIP_FILE=$(find . -type f -name "*.zip" | head -1)
+          echo "===== ZIP SEARCH ====="
+          find . -type f -iname "*.zip" -print
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found!"
-            exit 1
-          fi
-
-          echo "Using ZIP: $ZIP_FILE"
-          mkdir -p project
-          unzip -q "$ZIP_FILE" -d project
-
-          echo "=== Project files ==="
-          find project -maxdepth 3 -type f -print
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Build APK
-        working-directory: project
-        run: gradle assembleDebug --no-daemon
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: CryptoPulse-debug-apk
-          path: project/app/build/outputs/apk/debug/*.apk
+      - name: Find Android project
+        run: |
+          echo "===== GRADLE FILES ====="
+          find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
