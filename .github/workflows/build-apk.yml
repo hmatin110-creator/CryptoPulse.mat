@@ -1,4 +1,4 @@
-name: Build CryptoPulse APK
+name: Diagnose Gradle
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - main
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,25 +20,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Show project structure
-        run: |
-          echo "=== PROJECT ==="
-          ls -la
-          echo "=== APP ==="
-          ls -la app
-          echo "=== GRADLE FILES ==="
-          find . -maxdepth 3 -type f \( -name "build.gradle*" -o -name "settings.gradle*" \) -print
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
-        run: gradle assembleDebug --no-daemon
+      - name: Check project
+        run: |
+          echo "===== ROOT ====="
+          ls -la
+          echo "===== GRADLE FILES ====="
+          find . -maxdepth 3 -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: CryptoPulse-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+      - name: Gradle diagnostic
+        run: |
+          gradle tasks --stacktrace 2>&1 | tee gradle-error.txt
+          echo "===== IMPORTANT ERRORS ====="
+          grep -Ei "error:|FAILURE:|Could not|A problem occurred|Caused by:" gradle-error.txt | tail -30 || true
