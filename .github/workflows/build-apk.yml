@@ -1,4 +1,4 @@
-name: Diagnose CryptoPulse
+name: Build CryptoPulse APK
 
 on:
   workflow_dispatch:
@@ -7,27 +7,38 @@ on:
       - main
 
 jobs:
-  diagnose:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repository
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Show project structure
         run: |
-          echo "===== ROOT ====="
-          pwd
+          echo "=== PROJECT ==="
           ls -la
-          echo "===== ALL FILES ====="
-          find . -maxdepth 3 -type f -print
+          echo "=== APP ==="
+          ls -la app
+          echo "=== GRADLE FILES ==="
+          find . -maxdepth 3 -type f \( -name "build.gradle*" -o -name "settings.gradle*" \) -print
 
-      - name: Find ZIP
-        run: |
-          echo "===== ZIP SEARCH ====="
-          find . -type f -iname "*.zip" -print
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-      - name: Find Android project
-        run: |
-          echo "===== GRADLE FILES ====="
-          find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "settings.gradle.kts" \) -print
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CryptoPulse-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
