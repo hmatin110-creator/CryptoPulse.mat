@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -20,20 +20,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Find ZIP
-        run: |
-          echo "Files in repository:"
-          find . -maxdepth 2 -type f
-          echo "ZIP files:"
-          find . -maxdepth 2 -name "*.zip"
-
-            - name: Extract project
+      - name: Check ZIP
         run: |
           echo "=== Repository files ==="
-          ls -la
+          find . -maxdepth 2 -type f -print
           echo "=== ZIP files ==="
           find . -type f -name "*.zip" -print
 
+      - name: Extract project
+        run: |
           ZIP_FILE=$(find . -type f -name "*.zip" | head -1)
 
           if [ -z "$ZIP_FILE" ]; then
@@ -45,11 +40,8 @@ jobs:
           mkdir -p project
           unzip -q "$ZIP_FILE" -d project
 
-          echo "=== Extracted files ==="
-          find project -maxdepth 3 -type f | head -100
-        
-          
-          
+          echo "=== Project files ==="
+          find project -maxdepth 3 -type f -print
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
