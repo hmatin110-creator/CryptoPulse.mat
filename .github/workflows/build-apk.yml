@@ -27,10 +27,29 @@ jobs:
           echo "ZIP files:"
           find . -maxdepth 2 -name "*.zip"
 
-      - name: Extract project
+            - name: Extract project
         run: |
-          mkdir project
-          unzip -q ./*.zip -d project
+          echo "=== Repository files ==="
+          ls -la
+          echo "=== ZIP files ==="
+          find . -type f -name "*.zip" -print
+
+          ZIP_FILE=$(find . -type f -name "*.zip" | head -1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found!"
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+          mkdir -p project
+          unzip -q "$ZIP_FILE" -d project
+
+          echo "=== Extracted files ==="
+          find project -maxdepth 3 -type f | head -100
+        
+          
+          
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
