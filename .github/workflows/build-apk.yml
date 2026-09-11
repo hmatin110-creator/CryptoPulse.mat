@@ -1,4 +1,4 @@
-name: Build CryptoPulse APK
+name: Find Android Build Error
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - main
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,13 +25,20 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Build and show error
         run: |
-          gradle assembleDebug --stacktrace --info
+          set +e
+          gradle assembleDebug --stacktrace > build.log 2>&1
+          CODE=$?
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: CryptoPulse-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          echo "================ ERROR SUMMARY ================"
+
+          grep -E "FAILURE:|What went wrong:|Execution failed|Could not|A problem occurred|Caused by:|SDK|Android" build.log | tail -40 || true
+
+          echo "================ LAST 30 LINES ================"
+          tail -30 build.log
+
+          echo "================ EXIT CODE ================"
+          echo "$CODE"
+
+          exit 0
