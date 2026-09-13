@@ -25,7 +25,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK and show error
+      - name: Build and extract Kotlin errors
         id: build
         run: |
           set +e
@@ -36,22 +36,41 @@ jobs:
 
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          echo "## 🔧 CryptoPulse Build Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "## CryptoPulse Build Diagnostic" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$CODE" = "0" ]; then
-            echo "### ✅ Build succeeded" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### ❌ Build failed" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "## ✅ BUILD SUCCESS" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### Error details" >> "$GITHUB_STEP_SUMMARY"
+            echo "APK build completed successfully." >> "$GITHUB_STEP_SUMMARY"
+
+          else
+
+            echo "## ❌ BUILD FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Task:** compileDebugKotlin" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "### Kotlin errors" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
 
-            grep -E \
-              "FAILURE:|What went wrong:|Execution failed|A problem occurred|e: |error:|Could not|Unresolved reference|Type mismatch" \
-              build.log | tail -100 >> "$GITHUB_STEP_SUMMARY"
+            grep -n -E \
+              '(^|/)src/.*\.kt:[0-9]+:[0-9]+:|^e: |Unresolved reference|Type mismatch|Cannot infer|Expecting|None of the following functions|Overload resolution ambiguity' \
+              build.log | tail -150 >> "$GITHUB_STEP_SUMMARY"
 
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "### Last compiler output" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+            tail -120 build.log >> "$GITHUB_STEP_SUMMARY"
+
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+
           fi
 
           exit 0
@@ -59,7 +78,7 @@ jobs:
       - name: Fail if build failed
         if: steps.build.outputs.exit_code != '0'
         run: |
-          echo "❌ CryptoPulse build failed."
+          echo "CryptoPulse build failed."
           exit 1
 
       - name: Upload APK
