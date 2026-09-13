@@ -25,61 +25,70 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build and extract Kotlin errors
+      - name: Compile Kotlin and capture real error
         id: build
+        shell: bash
         run: |
           set +e
 
-          gradle assembleDebug --stacktrace > build.log 2>&1
+          gradle :app:compileDebugKotlin --stacktrace --info > build.log 2>&1
 
           CODE=$?
 
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          echo "## CryptoPulse Build Diagnostic" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 🔧 CryptoPulse Kotlin Diagnostic" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$CODE" = "0" ]; then
-
-            echo "## ✅ BUILD SUCCESS" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "APK build completed successfully." >> "$GITHUB_STEP_SUMMARY"
-
+            echo "## ✅ Kotlin compilation succeeded" >> "$GITHUB_STEP_SUMMARY"
           else
-
-            echo "## ❌ BUILD FAILED" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Task:** compileDebugKotlin" >> "$GITHUB_STEP_SUMMARY"
+            echo "## ❌ Kotlin compilation failed" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
 
-            echo "### Kotlin errors" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 🔴 Compiler messages" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
 
-            grep -n -E \
-              '(^|/)src/.*\.kt:[0-9]+:[0-9]+:|^e: |Unresolved reference|Type mismatch|Cannot infer|Expecting|None of the following functions|Overload resolution ambiguity' \
-              build.log | tail -150 >> "$GITHUB_STEP_SUMMARY"
+            grep -i -E \
+              "error|unresolved|type mismatch|cannot|expecting|conflicting|overload|exception|e:" \
+              build.log | tail -200 >> "$GITHUB_STEP_SUMMARY"
 
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
 
-            echo "### Last compiler output" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 📍 Kotlin source locations" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
 
-            tail -120 build.log >> "$GITHUB_STEP_SUMMARY"
+            grep -E \
+              "file:///.*\.kt:[0-9]+:[0-9]+" \
+              build.log | tail -100 >> "$GITHUB_STEP_SUMMARY"
 
             echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 🧾 Last 80 lines before failure" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+            tail -80 build.log >> "$GITHUB_STEP_SUMMARY"
+
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
           exit 0
 
-      - name: Fail if build failed
+      - name: Stop if compilation failed
         if: steps.build.outputs.exit_code != '0'
         run: |
-          echo "CryptoPulse build failed."
+          echo "Kotlin compilation failed."
           exit 1
+
+      - name: Build APK
+        if: success()
+        run: |
+          gradle assembleDebug
 
       - name: Upload APK
         if: success()
