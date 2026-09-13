@@ -25,29 +25,42 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK and save log
+      - name: Build APK and show error
+        id: build
         run: |
           set +e
+
           gradle assembleDebug --stacktrace > build.log 2>&1
+
           CODE=$?
-          echo "EXIT_CODE=$CODE" >> build.log
+
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
+          echo "## 🔧 CryptoPulse Build Result" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$CODE" = "0" ]; then
+            echo "### ✅ Build succeeded" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ❌ Build failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Error details" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+
+            grep -E \
+              "FAILURE:|What went wrong:|Execution failed|A problem occurred|e: |error:|Could not|Unresolved reference|Type mismatch" \
+              build.log | tail -100 >> "$GITHUB_STEP_SUMMARY"
+
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           exit 0
 
-      - name: Upload build log
-        uses: actions/upload-artifact@v4
-        with:
-          name: CryptoPulse-build-log
-          path: build.log
-          if-no-files-found: error
-
       - name: Fail if build failed
+        if: steps.build.outputs.exit_code != '0'
         run: |
-          if grep -q "EXIT_CODE=0" build.log; then
-            echo "Build succeeded"
-          else
-            echo "Build failed"
-            exit 1
-          fi
+          echo "❌ CryptoPulse build failed."
+          exit 1
 
       - name: Upload APK
         if: success()
