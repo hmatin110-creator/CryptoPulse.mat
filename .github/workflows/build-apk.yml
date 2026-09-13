@@ -25,19 +25,29 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Build APK and save log
         run: |
           set +e
           gradle assembleDebug --stacktrace > build.log 2>&1
           CODE=$?
+          echo "EXIT_CODE=$CODE" >> build.log
+          exit 0
 
-          echo "===== BUILD ERROR ====="
-          grep -E "FAILURE:|What went wrong:|Execution failed|Could not|A problem occurred|e: |error:" build.log | tail -80 || true
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: CryptoPulse-build-log
+          path: build.log
+          if-no-files-found: error
 
-          echo "===== LAST 80 LINES ====="
-          tail -80 build.log
-
-          exit $CODE
+      - name: Fail if build failed
+        run: |
+          if grep -q "EXIT_CODE=0" build.log; then
+            echo "Build succeeded"
+          else
+            echo "Build failed"
+            exit 1
+          fi
 
       - name: Upload APK
         if: success()
