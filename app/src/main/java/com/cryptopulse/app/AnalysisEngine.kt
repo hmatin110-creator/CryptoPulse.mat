@@ -6,7 +6,9 @@ data class Candle(
     val close: Double,
     val high: Double,
     val low: Double,
-    val volume: Double
+    val volume: Double,
+    val quoteVolume: Double = 0.0,
+    val openTime: Long = 0L
 )
 
 data class MoneyFlowResult(
