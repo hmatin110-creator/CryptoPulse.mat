@@ -5,767 +5,1282 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
-override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-    scheduleAutoLearning(this)
+        scheduleAutoLearning(this)
 
-    setContent {
-        CryptoPulseApp()
+        setContent {
+            CryptoPulseApp()
+        }
     }
-}
-
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CryptoPulseApp() {
 
-val coins = listOf(
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "DOGEUSDT"
-)
+    val presetCoins = listOf(
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "DOGEUSDT"
+    )
 
-var selected by remember { mutableStateOf(coins.first()) }
+    var selected by remember { mutableStateOf("BTCUSDT") }
+    var customSymbol by remember { mutableStateOf("") }
 
-var loading by remember { mutableStateOf(false) }
-var error by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-var result by remember { mutableStateOf<AnalysisResult?>(null) }
-var optimization by remember { mutableStateOf<OptimizationReport?>(null) }
-var optimizeLoading by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<AnalysisResult?>(null) }
+    var optimization by remember { mutableStateOf<OptimizationReport?>(null) }
+    var optimizeLoading by remember { mutableStateOf(false) }
 
-var backtest by remember { mutableStateOf<BacktestStats?>(null) }
-var backtestLoading by remember { mutableStateOf(false) }
+    var backtest by remember { mutableStateOf<BacktestStats?>(null) }
+    var backtestLoading by remember { mutableStateOf(false) }
 
-var scanLoading by remember { mutableStateOf(false) }
-var scanResults by remember {
-    mutableStateOf<List<ScanCandidate>>(emptyList())
-}
+    var scanLoading by remember { mutableStateOf(false) }
+    var scanResults by remember {
+        mutableStateOf<List<ScanCandidate>>(emptyList())
+    }
 
-var news by remember { mutableStateOf<NewsSnapshot?>(null) }
+    var news by remember { mutableStateOf<NewsSnapshot?>(null) }
 
-val context = LocalContext.current
-var learningStatus by remember {
-    mutableStateOf(AutoLearningStore.status(context))
-}
+    val context = LocalContext.current
 
-val scope = rememberCoroutineScope()
+    var learningStatus by remember {
+        mutableStateOf(AutoLearningStore.status(context))
+    }
 
-val repo = remember { LiveRepository() }
-val newsRepo = remember { NewsRepository() }
-val scanner = remember { MarketScanner() }
+    val scope = rememberCoroutineScope()
 
-fun refresh() {
-    scope.launch {
-        loading = true
-        error = null
+    val repo = remember { LiveRepository() }
+    val newsRepo = remember { NewsRepository() }
+    val scanner = remember { MarketScanner() }
 
-        runCatching {
-            repo.load(selected)
-        }.onSuccess { live ->
+    fun normalizeSymbol(value: String): String {
+        return value
+            .trim()
+            .uppercase(Locale.US)
+            .replace(" ", "")
+            .let {
+                if (it.endsWith("USDT")) it
+                else "${it}USDT"
+            }
+    }
 
-            val ns = runCatching {
-                newsRepo.load(selected)
-            }.getOrElse {
-                NewsSnapshot(
-                    items = emptyList(),
-                    score = 50,
-                    confidence = 0,
-                    bullishCount = 0,
-                    bearishCount = 0,
-                    marketMovingCount = 0
+    fun refresh(symbol: String = selected) {
+
+        val normalized = normalizeSymbol(symbol)
+
+        if (normalized.length < 6) {
+            error = "نماد ارز معتبر نیست"
+            return
+        }
+
+        selected = normalized
+
+        scope.launch {
+
+            loading = true
+            error = null
+
+            runCatching {
+
+                repo.load(normalized)
+
+            }.onSuccess { live ->
+
+                val ns = runCatching {
+                    newsRepo.load(normalized)
+                }.getOrElse {
+
+                    NewsSnapshot(
+                        items = emptyList(),
+                        score = 50,
+                        confidence = 0,
+                        bullishCount = 0,
+                        bearishCount = 0,
+                        marketMovingCount = 0
+                    )
+                }
+
+                news = ns
+
+                result = AnalysisEngine.analyze(
+
+                    live.candles,
+
+                    MarketFlowData(
+                        live.openInterest,
+                        live.fundingRate,
+                        live.openInterestHistory,
+                        live.longShortHistory,
+                        live.takerVolumeHistory
+                    ),
+
+                    ns.score,
+                    ns.confidence,
+                    live.btcCandles
+                )
+
+            }.onFailure {
+
+                error = it.message ?: "خطا در دریافت داده"
+
+            }
+
+            loading = false
+        }
+    }
+
+    fun runOptimization() {
+
+        scope.launch {
+
+            optimizeLoading = true
+
+            runCatching {
+
+                repo.load(selected)
+
+            }.onSuccess { live ->
+
+                optimization = WeightOptimizer.optimize(
+                    live.candles,
+                    listOf(3, 7, 14, 30),
+                    AutoLearningStore.getWeights(context)
+                )
+
+                learningStatus =
+                    AutoLearningStore.status(context)
+            }
+
+            optimizeLoading = false
+        }
+    }
+
+    fun runBacktest() {
+
+        scope.launch {
+
+            backtestLoading = true
+
+            runCatching {
+
+                repo.load(selected)
+
+            }.onSuccess { live ->
+
+                backtest = BacktestEngine.run(
+                    live.candles,
+                    listOf(3, 7, 14, 30),
+                    3
                 )
             }
 
-            news = ns
-
-            result = AnalysisEngine.analyze(
-                live.candles,
-                MarketFlowData(
-                    live.openInterest,
-                    live.fundingRate,
-                    live.openInterestHistory,
-                    live.longShortHistory,
-                    live.takerVolumeHistory
-                ),
-                ns.score,
-                ns.confidence,
-                live.btcCandles
-            )
-
-        }.onFailure {
-            error = it.message ?: "خطا در دریافت داده"
+            backtestLoading = false
         }
-
-        loading = false
     }
-}
 
-fun runOptimization() {
-    scope.launch {
-        optimizeLoading = true
+    fun scanMarket() {
 
-        runCatching {
-            repo.load(selected)
-        }.onSuccess { live ->
+        scope.launch {
 
-            optimization = WeightOptimizer.optimize(
-                live.candles,
-                listOf(3, 7, 14, 30),
-                AutoLearningStore.getWeights(context)
-            )
+            scanLoading = true
 
-            learningStatus = AutoLearningStore.status(context)
+            runCatching {
+
+                scanner.scan(120, 35, 12)
+
+            }.onSuccess {
+
+                scanResults = it
+            }
+
+            scanLoading = false
         }
-
-        optimizeLoading = false
     }
-}
 
-fun runBacktest() {
-    scope.launch {
-        backtestLoading = true
-
-        runCatching {
-            repo.load(selected)
-        }.onSuccess { live ->
-
-            backtest = BacktestEngine.run(
-                live.candles,
-                listOf(3, 7, 14, 30),
-                3
-            )
-        }
-
-        backtestLoading = false
+    LaunchedEffect(Unit) {
+        refresh("BTCUSDT")
     }
-}
 
-fun scanMarket() {
-    scope.launch {
-        scanLoading = true
+    MaterialTheme(
 
-        runCatching {
-            scanner.scan(120, 35, 12)
-        }.onSuccess {
-            scanResults = it
-        }
+        colorScheme = darkColorScheme(
+            primary = Color(0xFF00D4FF),
+            secondary = Color(0xFF7C4DFF),
+            background = Color(0xFF08111F),
+            surface = Color(0xFF101B2D)
+        )
 
-        scanLoading = false
-    }
-}
+    ) {
 
-LaunchedEffect(selected) {
-    refresh()
-}
+        Scaffold(
 
-MaterialTheme {
+            containerColor =
+                MaterialTheme.colorScheme.background,
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text("CryptoPulse • News + Market")
-                }
-            )
-        }
-    ) { pad ->
+            topBar = {
 
-        LazyColumn(
-            modifier = Modifier
-                .padding(pad)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+                TopAppBar(
 
-            item {
-                Text(
-                    "تحلیل چندتایم‌فریمی",
-                    style = MaterialTheme.typography.headlineSmall
-                )
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color(0xFF0A1424)
+                    ),
 
-                Text("1D • 2D • 3D • 4D • 1W • 1M")
-            }
+                    title = {
 
-            item {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    coins.forEach { coin ->
-                        FilterChip(
-                            selected = coin == selected,
-                            onClick = {
-                                selected = coin
-                            },
-                            label = {
-                                Text(coin.removeSuffix("USDT"))
-                            }
-                        )
-                    }
-                }
-            }
-
-            item {
-                Button(
-                    onClick = { refresh() },
-                    enabled = !loading
-                ) {
-                    Text(
-                        if (loading)
-                            "در حال دریافت..."
-                        else
-                            "بروزرسانی"
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = { scanMarket() },
-                    enabled = !scanLoading
-                ) {
-                    Text(
-                        if (scanLoading)
-                            "در حال اسکن ۱۲۰+ ارز..."
-                        else
-                            "🔎 اسکن هوشمند ۱۲۰+ ارز"
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = { runBacktest() },
-                    enabled = !backtestLoading
-                ) {
-                    Text(
-                        if (backtestLoading)
-                            "در حال بک‌تست..."
-                        else
-                            "📊 بک‌تست موتور سیگنال"
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = { runOptimization() },
-                    enabled = !optimizeLoading
-                ) {
-                    Text(
-                        if (optimizeLoading)
-                            "در حال بهینه‌سازی وزن‌ها..."
-                        else
-                            "🧠 بهینه‌سازی خودکار وزن‌ها"
-                    )
-                }
-            }
-
-            item {
-                Text(
-                    "یادگیری خودکار هفتگی: $learningStatus",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            optimization?.let { o ->
-
-                item {
-                    Card {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
+                        Column {
 
                             Text(
-                                "بهینه‌سازی Walk-Forward",
-                                style = MaterialTheme.typography.titleLarge
+                                "CryptoPulse",
+                                fontWeight = FontWeight.Bold
                             )
 
                             Text(
-                                "Baseline objective: ${
-                                    "%.4f".format(o.baselineScore)
-                                } • Optimized: ${
-                                    "%.4f".format(o.optimizedScore)
-                                }"
-                            )
-
-                            Text(
-                                "Holdout Hit Rate: ${
-                                    "%.1f".format(o.holdoutHitRate * 100)
-                                }% • Return: ${
-                                    "%.2f".format(o.holdoutReturn * 100)
-                                }% • Brier: ${
-                                    "%.4f".format(o.holdoutBrier)
-                                } • DD: ${
-                                    "%.2f".format(o.holdoutDrawdown * 100)
-                                }%"
-                            )
-
-                            Text(
-                                "Weights → " +
-                                        "Tech ${
-                                            "%.0f".format(
-                                                o.optimized.technical * 100
-                                            )
-                                        }% | " +
-                                        "Flow ${
-                                            "%.0f".format(
-                                                o.optimized.moneyFlow * 100
-                                            )
-                                        }% | " +
-                                        "TF ${
-                                            "%.0f".format(
-                                                o.optimized.timeframe * 100
-                                            )
-                                        }% | " +
-                                        "Structure ${
-                                            "%.0f".format(
-                                                o.optimized.structure * 100
-                                            )
-                                        }% | " +
-                                        "Div ${
-                                            "%.0f".format(
-                                                o.optimized.divergence * 100
-                                            )
-                                        }% | " +
-                                        "News ${
-                                            "%.0f".format(
-                                                o.optimized.news * 100
-                                            )
-                                        }% | " +
-                                        "BTC ${
-                                            "%.0f".format(
-                                                o.optimized.btc * 100
-                                            )
-                                        }%",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-
-                            Text(
-                                "Holdout improvement: ${
-                                    "%.4f".format(o.holdoutImprovement)
-                                } • ${
-                                    if (o.accepted)
-                                        "ACCEPTED"
-                                    else
-                                        "REJECTED"
-                                }",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-
-                            Text(
-                                o.note,
-                                style = MaterialTheme.typography.bodySmall
+                                "AI Crypto Market Analyzer",
+                                style =
+                                    MaterialTheme.typography.labelSmall
                             )
                         }
                     }
-                }
+                )
             }
 
-            backtest?.let { b ->
+        ) { pad ->
+
+            LazyColumn(
+
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(pad)
+                    .padding(horizontal = 14.dp),
+
+                verticalArrangement =
+                    Arrangement.spacedBy(12.dp),
+
+                contentPadding =
+                    PaddingValues(vertical = 14.dp)
+
+            ) {
 
                 item {
-                    Card {
+
+                    Card(
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+
                         Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement =
+                                Arrangement.spacedBy(10.dp)
                         ) {
 
                             Text(
-                                "نتیجه بک‌تست چندافقی",
-                                style = MaterialTheme.typography.titleLarge
+                                "تحلیل ارز",
+                                style =
+                                    MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold
                             )
 
                             Text(
-                                "Samples: ${b.samples} • Signals: ${b.evaluatedSignals}"
+                                "هر جفت‌ارز USDT را وارد کن و تمام تحلیل‌ها را اجرا کن.",
+                                style =
+                                    MaterialTheme.typography.bodySmall
                             )
 
-                            Text(
-                                "BUY: ${b.buySignals} • SELL: ${b.sellSignals}"
+                            OutlinedTextField(
+
+                                value = customSymbol,
+
+                                onValueChange = {
+                                    customSymbol =
+                                        it.uppercase(Locale.US)
+                                },
+
+                                modifier =
+                                    Modifier.fillMaxWidth(),
+
+                                singleLine = true,
+
+                                label = {
+                                    Text("Symbol")
+                                },
+
+                                placeholder = {
+                                    Text("مثلاً PEPEUSDT")
+                                }
                             )
 
-                            Text(
-                                "Avg Hit Rate: ${
-                                    "%.1f".format(b.hitRate * 100)
-                                }%"
-                            )
+                            Button(
 
-                            Text(
-                                "Avg Net Return: ${
-                                    "%.2f".format(b.avgReturn * 100)
-                                }%"
-                            )
+                                onClick = {
 
-                            Text(
-                                "Worst Max Drawdown: ${
-                                    "%.2f".format(b.maxDrawdown * 100)
-                                }%"
-                            )
+                                    if (customSymbol.isNotBlank()) {
+                                        refresh(customSymbol)
+                                    }
+                                },
 
-                            Text(
-                                "Avg Brier Score: ${
-                                    "%.4f".format(b.brierScore)
-                                }"
-                            )
+                                enabled =
+                                    !loading &&
+                                    customSymbol.isNotBlank(),
 
-                            Text(
-                                "هزینه هر طرف: fee ${
-                                    "%.2f".format(b.feeRate * 100)
-                                }% + slippage ${
-                                    "%.2f".format(b.slippageRate * 100)
-                                }%",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                                modifier =
+                                    Modifier.fillMaxWidth(),
 
-                            b.horizons.forEach { h ->
+                                shape =
+                                    RoundedCornerShape(12.dp)
+
+                            ) {
 
                                 Text(
-                                    "${h.horizon}D: " +
-                                            "signals ${h.signals} | " +
-                                            "hit ${
-                                                "%.1f".format(
-                                                    h.hitRate * 100
-                                                )
-                                            }% | " +
-                                            "net ${
-                                                "%.2f".format(
-                                                    h.avgReturn * 100
-                                                )
-                                            }% | " +
-                                            "DD ${
-                                                "%.2f".format(
-                                                    h.maxDrawdown * 100
-                                                )
-                                            }% | " +
-                                            "Brier ${
-                                                "%.3f".format(
-                                                    h.brierScore
-                                                )
-                                            }",
-                                    style = MaterialTheme.typography.bodySmall
+                                    if (loading)
+                                        "در حال تحلیل..."
+                                    else
+                                        "تحلیل این ارز"
                                 )
                             }
+                        }
+                    }
+                }
 
-                            Text(
-                                b.note,
-                                style = MaterialTheme.typography.bodySmall
+                item {
+
+                    Text(
+                        "ارزهای سریع",
+                        style =
+                            MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+
+                    Row(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        horizontalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+
+                        presetCoins.forEach { coin ->
+
+                            FilterChip(
+
+                                selected =
+                                    coin == selected,
+
+                                onClick = {
+                                    customSymbol = ""
+                                    refresh(coin)
+                                },
+
+                                label = {
+                                    Text(
+                                        coin.removeSuffix("USDT")
+                                    )
+                                }
                             )
                         }
                     }
                 }
-            }
-
-            if (scanResults.isNotEmpty()) {
 
                 item {
-                    Text(
-                        "نتایج اسکن هوشمند بازار",
-                        style = MaterialTheme.typography.titleLarge
-                    )
+
+                    Row(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        Button(
+                            onClick = {
+                                refresh(selected)
+                            },
+                            enabled = !loading,
+                            modifier =
+                                Modifier.weight(1f)
+                        ) {
+                            Text(
+                                if (loading)
+                                    "Loading..."
+                                else
+                                    "Refresh"
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                scanMarket()
+                            },
+                            enabled = !scanLoading,
+                            modifier =
+                                Modifier.weight(1f)
+                        ) {
+                            Text(
+                                if (scanLoading)
+                                    "Scanning..."
+                                else
+                                    "Scanner"
+                            )
+                        }
+                    }
+                }
+
+                item {
 
                     Text(
-                        "ابتدا حجم ۱۲۰+ ارز بررسی می‌شود؛ سپس کاندیداهای برتر با Money Flow و News غنی می‌شوند.",
-                        style = MaterialTheme.typography.bodySmall
+                        "1D • 2D • 3D • 4D • 1W • 1M • 3M • 6M",
+                        style =
+                            MaterialTheme.typography.bodySmall
                     )
                 }
 
-                scanResults
-                    .take(10)
-                    .forEachIndexed { idx, x ->
+                error?.let { msg ->
+
+                    item {
+
+                        Card(
+                            colors =
+                                CardDefaults.cardColors(
+                                    containerColor =
+                                        MaterialTheme.colorScheme.errorContainer
+                                )
+                        ) {
+
+                            Text(
+                                "Error: $msg",
+                                modifier =
+                                    Modifier.padding(12.dp),
+                                color =
+                                    MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+
+                result?.let { r ->
+
+                    item {
+
+                        ScoreCard(
+                            symbol = selected,
+                            result = r
+                        )
+                    }
+
+                    item {
+
+                        SectionTitle("شاخص‌های اصلی")
+
+                        Row(
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.spacedBy(8.dp)
+                        ) {
+
+                            MetricCard(
+                                "Money Flow",
+                                r.moneyFlow,
+                                Modifier.weight(1f)
+                            )
+
+                            MetricCard(
+                                "Trend",
+                                r.trend,
+                                Modifier.weight(1f)
+                            )
+
+                            MetricCard(
+                                "News",
+                                r.news,
+                                Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    item {
+
+                        SectionTitle("وضعیت بازار")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+
+                                InfoRow(
+                                    "Money Flow",
+                                    r.moneyFlowDetails.label
+                                )
+
+                                InfoRow(
+                                    "Flow Confidence",
+                                    "${r.moneyFlowDetails.confidence}%"
+                                )
+
+                                InfoRow(
+                                    "Structure",
+                                    r.structure.label
+                                )
+
+                                InfoRow(
+                                    "Divergence",
+                                    r.divergence.label
+                                )
+
+                                InfoRow(
+                                    "BTC Regime",
+                                    r.btcRegime.label
+                                )
+                            }
+                        }
+                    }
+
+                    item {
+
+                        SectionTitle("امتیاز تایم‌فریم‌ها")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(12.dp)
+                            ) {
+
+                                r.timeframeScores
+                                    .forEach { (key, value) ->
+
+                                        TimeframeRow(
+                                            key,
+                                            value
+                                        )
+                                    }
+                            }
+                        }
+                    }
+
+                    item {
+
+                        SectionTitle("Money Flow")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+
+                                Text(
+                                    r.moneyFlowDetails.label,
+                                    style =
+                                        MaterialTheme.typography.titleLarge,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    "Score: ${r.moneyFlowDetails.score}/100"
+                                )
+
+                                HorizontalDivider()
+
+                                r.moneyFlowDetails
+                                    .reasons
+                                    .forEach { reason ->
+
+                                        Text(
+                                            "• $reason",
+                                            style =
+                                                MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                            }
+                        }
+                    }
+
+                    r.tradePlan?.let { p ->
 
                         item {
+
+                            SectionTitle("Trade Plan")
 
                             Card {
 
                                 Column(
-                                    modifier = Modifier.padding(12.dp)
+                                    modifier =
+                                        Modifier.padding(14.dp),
+                                    verticalArrangement =
+                                        Arrangement.spacedBy(7.dp)
                                 ) {
 
-                                    Text(
-                                        "${idx + 1}. ${
-                                            x.symbol.removeSuffix("USDT")
-                                        }",
-                                        style = MaterialTheme.typography.titleMedium
+                                    InfoRow(
+                                        "Entry",
+                                        "${p.entryLow.formatPrice()} - ${p.entryHigh.formatPrice()}"
                                     )
 
-                                    Text(
-                                        "Pump ${x.result.pump}% • " +
-                                                "Dump ${x.result.dump}% • " +
-                                                "Score ${x.result.score} • " +
-                                                "Confidence ${x.result.confidence}%"
+                                    InfoRow(
+                                        "Stop Loss",
+                                        p.stopLoss.formatPrice()
                                     )
 
-                                    Text(
-                                        "${x.result.signal} • " +
-                                                "${x.result.structure.label} • " +
-                                                "${x.flowLabel} • " +
-                                                "News ${x.newsScore}"
+                                    InfoRow(
+                                        "TP1",
+                                        p.tp1.formatPrice()
+                                    )
+
+                                    InfoRow(
+                                        "TP2",
+                                        p.tp2.formatPrice()
+                                    )
+
+                                    InfoRow(
+                                        "Risk / Reward",
+                                        "%.2f".format(
+                                            p.riskReward
+                                        )
                                     )
                                 }
                             }
                         }
                     }
-            }
 
-            error?.let { msg ->
+                    item {
+
+                        SectionTitle("دلایل تحلیل")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(5.dp)
+                            ) {
+
+                                r.reasons.forEach { reason ->
+
+                                    Text(
+                                        "• $reason",
+                                        style =
+                                            MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (scanResults.isNotEmpty()) {
+
+                    item {
+
+                        SectionTitle(
+                            "نتایج Scanner"
+                        )
+
+                        Text(
+                            "بهترین کاندیداهای فعلی بازار",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    items(
+                        scanResults.take(10)
+                    ) { x ->
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(12.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(5.dp)
+                            ) {
+
+                                Text(
+                                    x.symbol.removeSuffix("USDT"),
+                                    style =
+                                        MaterialTheme.typography.titleMedium,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    "Pump ${x.result.pump}%  •  " +
+                                            "Dump ${x.result.dump}%"
+                                )
+
+                                Text(
+                                    "Score ${x.result.score}/100  •  " +
+                                            "Confidence ${x.result.confidence}%"
+                                )
+
+                                Text(
+                                    "${x.result.signal}  •  " +
+                                            x.result.structure.label +
+                                            "  •  " +
+                                            x.flowLabel
+                                )
+                            }
+                        }
+                    }
+                }
 
                 item {
-                    Text(
-                        "خطا: $msg",
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
 
-            result?.let { r ->
+                    Row(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+
+                        OutlinedButton(
+                            onClick = {
+                                runBacktest()
+                            },
+                            enabled = !backtestLoading,
+                            modifier =
+                                Modifier.weight(1f)
+                        ) {
+                            Text(
+                                if (backtestLoading)
+                                    "Backtest..."
+                                else
+                                    "Backtest"
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                runOptimization()
+                            },
+                            enabled = !optimizeLoading,
+                            modifier =
+                                Modifier.weight(1f)
+                        ) {
+                            Text(
+                                if (optimizeLoading)
+                                    "Optimizing..."
+                                else
+                                    "Optimize"
+                            )
+                        }
+                    }
+                }
+
+                backtest?.let { b ->
+
+                    item {
+
+                        SectionTitle("Backtest")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(5.dp)
+                            ) {
+
+                                InfoRow(
+                                    "Samples",
+                                    b.samples.toString()
+                                )
+
+                                InfoRow(
+                                    "Signals",
+                                    b.evaluatedSignals.toString()
+                                )
+
+                                InfoRow(
+                                    "Hit Rate",
+                                    "%.1f%%".format(
+                                        b.hitRate * 100
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Avg Return",
+                                    "%.2f%%".format(
+                                        b.avgReturn * 100
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Max Drawdown",
+                                    "%.2f%%".format(
+                                        b.maxDrawdown * 100
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Brier Score",
+                                    "%.4f".format(
+                                        b.brierScore
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                optimization?.let { o ->
+
+                    item {
+
+                        SectionTitle("Auto Learning")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(5.dp)
+                            ) {
+
+                                InfoRow(
+                                    "Baseline",
+                                    "%.4f".format(
+                                        o.baselineScore
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Optimized",
+                                    "%.4f".format(
+                                        o.optimizedScore
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Holdout Hit Rate",
+                                    "%.1f%%".format(
+                                        o.holdoutHitRate * 100
+                                    )
+                                )
+
+                                InfoRow(
+                                    "Status",
+                                    if (o.accepted)
+                                        "ACCEPTED"
+                                    else
+                                        "REJECTED"
+                                )
+
+                                Text(
+                                    o.note,
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
+
+                news?.let { ns ->
+
+                    item {
+
+                        SectionTitle("اخبار")
+
+                        Card {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(6.dp)
+                            ) {
+
+                                Text(
+                                    "News Score: ${ns.score}/100",
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    "Confidence: ${ns.confidence}%"
+                                )
+
+                                Text(
+                                    "Bullish: ${ns.bullishCount}  •  " +
+                                            "Bearish: ${ns.bearishCount}  •  " +
+                                            "Market-moving: ${ns.marketMovingCount}"
+                                )
+                            }
+                        }
+                    }
+
+                    items(
+                        ns.items.take(10)
+                    ) { n ->
+
+                        Card(
+                            onClick = {
+
+                                if (n.link.isNotBlank()) {
+
+                                    runCatching {
+
+                                        context.startActivity(
+                                            Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse(n.link)
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+
+                            Column(
+                                modifier =
+                                    Modifier.padding(12.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(5.dp)
+                            ) {
+
+                                Text(
+                                    n.source,
+                                    style =
+                                        MaterialTheme.typography.labelMedium
+                                )
+
+                                Text(
+                                    n.title,
+                                    style =
+                                        MaterialTheme.typography.titleMedium
+                                )
+
+                                Text(
+                                    "${n.category} • " +
+                                            "Sentiment ${n.sentiment} • " +
+                                            "Impact ${n.impact}/5",
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+
+                                Text(
+                                    "Credibility ${n.credibility}% • " +
+                                            "Relevance ${n.relevance}%",
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
 
                 item {
 
                     Card {
 
                         Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier =
+                                Modifier.padding(14.dp),
+                            verticalArrangement =
+                                Arrangement.spacedBy(5.dp)
                         ) {
 
                             Text(
-                                selected,
-                                style = MaterialTheme.typography.titleLarge
+                                "CryptoPulse",
+                                fontWeight =
+                                    FontWeight.Bold
                             )
 
                             Text(
-                                "${r.signal} • Score ${r.score}/100",
-                                style = MaterialTheme.typography.headlineMedium
+                                "Pump/Dump احتمال آماری است و تضمین سود نیست.",
+                                style =
+                                    MaterialTheme.typography.bodySmall
                             )
 
                             Text(
-                                "Pump: ${r.pump}%   Dump: ${r.dump}%"
-                            )
-
-                            Text(
-                                "Confidence: ${r.confidence}%"
-                            )
-
-                            Text(
-                                "Money Flow: ${r.moneyFlow}  | " +
-                                        "Trend: ${r.trend}  | " +
-                                        "News: ${r.news}"
-                            )
-
-                            Text(
-                                "Flow Status: " +
-                                        "${r.moneyFlowDetails.label} • " +
-                                        "Confidence ${r.moneyFlowDetails.confidence}%"
-                            )
-
-                            Text(
-                                "Market Structure: ${r.structure.label} | " +
-                                        "S ${"%.4f".format(r.structure.support)} | " +
-                                        "R ${"%.4f".format(r.structure.resistance)}"
-                            )
-
-                            Text(
-                                "Divergence: ${r.divergence.label} • " +
-                                        "BTC Regime: ${r.btcRegime.label}"
+                                "Auto Learning: $learningStatus",
+                                style =
+                                    MaterialTheme.typography.bodySmall
                             )
                         }
                     }
                 }
-
-                item {
-                    Text(
-                        "امتیاز تایم‌فریم‌ها",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-
-                r.timeframeScores.forEach { (key, value) ->
-
-                    item {
-                        Text("$key: $value/100")
-                    }
-                }
-
-                item {
-                    Text(
-                        "Money Flow",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-
-                item {
-                    Text(
-                        "${r.moneyFlowDetails.label} • " +
-                                "${r.moneyFlowDetails.score}/100"
-                    )
-                }
-
-                r.moneyFlowDetails.reasons.forEach { reason ->
-
-                    item {
-                        Text("• $reason")
-                    }
-                }
-
-                r.tradePlan?.let { p ->
-
-                    item {
-
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-
-                            Text(
-                                "Trade Plan",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-
-                            Text(
-                                "Entry: ${
-                                    "%.4f".format(p.entryLow)
-                                } - ${
-                                    "%.4f".format(p.entryHigh)
-                                }"
-                            )
-
-                            Text(
-                                "SL: ${
-                                    "%.4f".format(p.stopLoss)
-                                } • TP1: ${
-                                    "%.4f".format(p.tp1)
-                                } • TP2: ${
-                                    "%.4f".format(p.tp2)
-                                }"
-                            )
-                        }
-                    }
-                }
-
-                item {
-                    Text(
-                        "دلایل کلی",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-
-                r.reasons.forEach { reason ->
-
-                    item {
-                        Text("• $reason")
-                    }
-                }
-            }
-
-            news?.let { ns ->
-
-                item {
-
-                    Text(
-                        "اخبار معتبر",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-
-                    Text(
-                        "News Score ${ns.score}/100 • " +
-                                "Confidence ${ns.confidence}%"
-                    )
-
-                    Text(
-                        "Bullish ${ns.bullishCount} • " +
-                                "Bearish ${ns.bearishCount} • " +
-                                "Market-moving ${ns.marketMovingCount}"
-                    )
-                }
-
-                ns.items
-                    .take(10)
-                    .forEach { n ->
-
-                        item {
-
-                            Card(
-                                onClick = {
-
-                                    if (n.link.isNotBlank()) {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent(
-                                                    Intent.ACTION_VIEW,
-                                                    Uri.parse(n.link)
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
-                            ) {
-
-                                Column(
-                                    modifier = Modifier.padding(12.dp)
-                                ) {
-
-                                    Text(
-                                        n.source,
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-
-                                    Text(
-                                        n.title,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-
-                                    Text(
-                                        "${n.category} • " +
-                                                "Sentiment ${n.sentiment} • " +
-                                                "Impact ${n.impact}/5 • " +
-                                                "Freshness ${n.recency}%",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-
-                                    Text(
-                                        "Source confidence ${n.credibility}% • " +
-                                                "Relevance ${n.relevance}%",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                            }
-                        }
-                    }
-            }
-
-            item {
-
-                Text(
-                    "منابع خبر: CoinDesk و CryptoSlate. " +
-                            "اپ فقط تیتر و لینک را نگه می‌دارد و برای متن کامل به منبع اصلی می‌رود.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item {
-
-                Text(
-                    "Pump/Dump احتمال آماری است، نه تضمین سود.",
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
     }
 }
 
+@Composable
+private fun ScoreCard(
+    symbol: String,
+    result: AnalysisResult
+) {
+
+    val signalColor = when (result.signal) {
+        "BUY" -> Color(0xFF00C853)
+        "SELL" -> Color(0xFFFF5252)
+        else -> Color(0xFFFFB300)
+    }
+
+    Card(
+        shape = RoundedCornerShape(22.dp)
+    ) {
+
+        Column(
+            modifier =
+                Modifier.padding(18.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+
+            Row(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+
+                Column {
+
+                    Text(
+                        symbol,
+                        style =
+                            MaterialTheme.typography.headlineSmall,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        "Full Market Analysis",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Surface(
+                    color = signalColor,
+                    shape =
+                        RoundedCornerShape(12.dp)
+                ) {
+
+                    Text(
+                        result.signal,
+                        modifier =
+                            Modifier.padding(
+                                horizontal = 14.dp,
+                                vertical = 8.dp
+                            ),
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+
+            HorizontalDivider()
+
+            Text(
+                "Score ${result.score}/100",
+                style =
+                    MaterialTheme.typography.headlineMedium,
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            LinearProgressIndicator(
+                progress = {
+                    result.score / 100f
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            )
+
+            Row(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween
+            ) {
+
+                Text("Pump ${result.pump}%")
+                Text("Dump ${result.dump}%")
+                Text("Confidence ${result.confidence}%")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricCard(
+    title: String,
+    value: Int,
+    modifier: Modifier
+) {
+
+    Card(
+        modifier = modifier
+    ) {
+
+        Column(
+            modifier =
+                Modifier.padding(12.dp)
+        ) {
+
+            Text(
+                title,
+                style =
+                    MaterialTheme.typography.labelMedium
+            )
+
+            Text(
+                "$value",
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimeframeRow(
+    key: String,
+    value: Int
+) {
+
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 5.dp),
+
+        horizontalArrangement =
+            Arrangement.SpaceBetween,
+
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+
+        Text(
+            key,
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        Row(
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+
+            Text("$value/100")
+
+            Spacer(
+                modifier =
+                    Modifier.width(10.dp)
+            )
+
+            LinearProgressIndicator(
+                progress = {
+                    value / 100f
+                },
+                modifier =
+                    Modifier.width(100.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(
+    title: String,
+    value: String
+) {
+
+    Row(
+        modifier =
+            Modifier.fillMaxWidth(),
+
+        horizontalArrangement =
+            Arrangement.SpaceBetween
+    ) {
+
+        Text(
+            title,
+            style =
+                MaterialTheme.typography.bodySmall
+        )
+
+        Text(
+            value,
+            fontWeight =
+                FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun SectionTitle(
+    title: String
+) {
+
+    Text(
+        title,
+        style =
+            MaterialTheme.typography.titleLarge,
+        fontWeight =
+            FontWeight.Bold
+    )
+}
+
+private fun Double.formatPrice(): String {
+
+    return when {
+        this >= 1000 ->
+            "%.2f".format(this)
+
+        this >= 1 ->
+            "%.4f".format(this)
+
+        this >= 0.01 ->
+            "%.6f".format(this)
+
+        else ->
+            "%.8f".format(this)
+    }
 }
