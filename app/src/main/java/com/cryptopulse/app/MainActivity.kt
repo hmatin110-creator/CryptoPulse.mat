@@ -593,44 +593,303 @@ fun CryptoPulseApp() {
 
                     item {
 
-                        SectionTitle("Money Flow")
+    SectionTitle("جدول ورود و خروج پول")
 
-                        Card {
+    Text(
+        "برآورد جریان سرمایه در بازه‌های مختلف",
+        style = MaterialTheme.typography.bodySmall
+    )
+}
 
-                            Column(
-                                modifier =
-                                    Modifier.padding(14.dp),
-                                verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
+item {
+
+    val periods = listOf(
+        "1D",
+        "2D",
+        "3D",
+        "4D",
+        "1W",
+        "1M",
+        "3M",
+        "6M"
+    )
+
+    Card(
+        shape = RoundedCornerShape(18.dp)
+    ) {
+
+        Column(
+            modifier = Modifier.padding(10.dp)
+        ) {
+
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(
+                        rememberScrollState()
+                    )
+            ) {
+
+                Column {
+
+                    // Header
+                    Row(
+                        modifier = Modifier
+                            .width(980.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .padding(
+                                vertical = 10.dp,
+                                horizontal = 6.dp
+                            ),
+
+                        horizontalArrangement =
+                            Arrangement.spacedBy(4.dp)
+                    ) {
+
+                        MoneyFlowCell(
+                            "بازه",
+                            70.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "ورود",
+                            125.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "خروج",
+                            125.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "خالص",
+                            125.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "تغییر",
+                            100.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "ورود غیرعادی",
+                            120.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "خروج غیرعادی",
+                            120.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "اطمینان",
+                            90.dp,
+                            true
+                        )
+
+                        MoneyFlowCell(
+                            "وضعیت",
+                            150.dp,
+                            true
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.height(4.dp)
+                    )
+
+                    periods.forEach { key ->
+
+                        val p =
+                            r.moneyFlowDetails.periods[key]
+
+                        if (p != null) {
+
+                            val statusColor =
+                                when {
+                                    p.unusualInflow >= 70 ->
+                                        Color(0xFF00C853)
+
+                                    p.unusualOutflow >= 70 ->
+                                        Color(0xFFFF5252)
+
+                                    p.netFlowUsd > 0 ->
+                                        Color(0xFF69F0AE)
+
+                                    p.netFlowUsd < 0 ->
+                                        Color(0xFFFF8A80)
+
+                                    else ->
+                                        MaterialTheme.colorScheme.onSurface
+                                }
+
+                            Row(
+                                modifier = Modifier
+                                    .width(980.dp)
+                                    .padding(
+                                        vertical = 8.dp,
+                                        horizontal = 6.dp
+                                    ),
+
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(4.dp),
+
+                                verticalAlignment =
+                                    Alignment.CenterVertically
                             ) {
 
-                                Text(
-                                    r.moneyFlowDetails.label,
-                                    style =
-                                        MaterialTheme.typography.titleLarge,
-                                    fontWeight =
-                                        FontWeight.Bold
+                                MoneyFlowCell(
+                                    p.title.ifBlank {
+                                        p.key
+                                    },
+                                    70.dp,
+                                    true
                                 )
 
-                                Text(
-                                    "Score: ${r.moneyFlowDetails.score}/100"
+                                MoneyFlowCell(
+                                    formatFlowMoney(
+                                        p.inflowUsd
+                                    ),
+                                    125.dp
                                 )
 
-                                HorizontalDivider()
+                                MoneyFlowCell(
+                                    formatFlowMoney(
+                                        p.outflowUsd
+                                    ),
+                                    125.dp
+                                )
 
-                                r.moneyFlowDetails
-                                    .reasons
-                                    .forEach { reason ->
+                                MoneyFlowCell(
+                                    formatFlowMoney(
+                                        p.netFlowUsd
+                                    ),
+                                    125.dp,
+                                    valueColor =
+                                        statusColor
+                                )
 
-                                        Text(
-                                            "• $reason",
-                                            style =
-                                                MaterialTheme.typography.bodySmall
+                                MoneyFlowCell(
+                                    formatPercent(
+                                        p.netChangePct
+                                    ),
+                                    100.dp,
+                                    valueColor =
+                                        statusColor
+                                )
+
+                                MoneyFlowCell(
+                                    "${p.unusualInflow}%",
+                                    120.dp,
+                                    valueColor =
+                                        if (
+                                            p.unusualInflow >= 70
                                         )
-                                    }
+                                            Color(0xFF00C853)
+                                        else
+                                            MaterialTheme
+                                                .colorScheme
+                                                .onSurface
+                                )
+
+                                MoneyFlowCell(
+                                    "${p.unusualOutflow}%",
+                                    120.dp,
+                                    valueColor =
+                                        if (
+                                            p.unusualOutflow >= 70
+                                        )
+                                            Color(0xFFFF5252)
+                                        else
+                                            MaterialTheme
+                                                .colorScheme
+                                                .onSurface
+                                )
+
+                                MoneyFlowCell(
+                                    "${p.confidence}%",
+                                    90.dp
+                                )
+
+                                MoneyFlowCell(
+                                    p.status,
+                                    150.dp,
+                                    valueColor =
+                                        statusColor,
+                                    true
+                                )
                             }
+
+                            HorizontalDivider(
+                                modifier =
+                                    Modifier.width(980.dp)
+                            )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+item {
+
+    Card(
+        shape = RoundedCornerShape(18.dp)
+    ) {
+
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(7.dp)
+        ) {
+
+            Text(
+                "جمع‌بندی جریان پول",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            InfoRow(
+                "وضعیت",
+                r.moneyFlowDetails.label
+            )
+
+            InfoRow(
+                "امتیاز",
+                "${r.moneyFlowDetails.score}/100"
+            )
+
+            InfoRow(
+                "اطمینان",
+                "${r.moneyFlowDetails.confidence}%"
+            )
+
+            HorizontalDivider()
+
+            r.moneyFlowDetails.reasons
+                .forEach { reason ->
+
+                    Text(
+                        "• $reason",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+        }
+    }
+}
 
                     r.tradePlan?.let { p ->
 
