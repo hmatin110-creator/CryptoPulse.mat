@@ -12,106 +12,654 @@ import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 
 /**
+ * MarketScanner
+ *
+ * وظایف:
+ * 1) دریافت تمام نمادهای USDT قابل تحلیل از Binance
+ * 2) تحلیل اولیه تمام بازار
+ * 3) مشخص کردن دو خروجی:
+ *    - Top 10 کل بازار
+ *    - Top 10 بین رتبه‌های بازار 1 تا 100
+ * 4) برای کاندیداهای برتر، اطلاعات Live + Money Flow + News را تکمیل می‌کند.
+ *
+ * نکته:
+ * رتبه بازار در این Scanner بر اساس حجم معاملات 24 ساعته USDT
+ * در Binance مرتب می‌شود، نه Market Cap سایت‌هایی مثل CoinMarketCap.
+ */
 
-Smart market scanner v0.8
+data class MarketScanResult(
+    val top10All: List<ScanCandidate>,
+    val top10Top100: List<ScanCandidate>,
+    val analyzedCount: Int,
+    val universeCount: Int
+)
 
-Stage 1: rank a large USDT universe by 24h quote volume.
-
-Stage 2: run cheap technical analysis on the top universe.
-
-Stage 3: enrich only the strongest candidates with derivatives/money-flow + news.
-
-This keeps API usage bounded while scanning 100+ symbols.
-*/
 class MarketScanner {
-private val spot = Retrofit.Builder().baseUrl("https://api.binance.com/")
-.addConverterFactory(MoshiConverterFactory.create()).build().create(BinanceScannerApi::class.java)
-private val market = Retrofit.Builder().baseUrl("https://api.binance.com/")
-.addConverterFactory(MoshiConverterFactory.create()).build().create(BinanceSpotApi::class.java)
-private val live = LiveRepository()
-private val news = NewsRepository()
 
-suspend fun scan(universeLimit: Int = 120, technicalLimit: Int = 35, enrichLimit: Int = 12): List<ScanCandidate> = withContext(Dispatchers.IO) {
-val tickers = JSONArray(spot.ticker24h().string())
-val stable = setOf("USDCUSDT","BUSDUSDT","TUSDUSDT","FDUSDUSDT","USDPUSDT","DAIUSDT")
-val symbols = mutableListOf<Pair<String,Double>>()
-for (i in 0 until tickers.length()) {
-val o = tickers.getJSONObject(i)
-val s = o.optString("symbol")
-if (s.endsWith("USDT") && !stable.contains(s)) {
-val q = o.optDouble("quoteVolume", 0.0)
-if (q > 0) symbols += s to q
-}
-}
-val universe = symbols.sortedByDescending { it.second }.take(universeLimit)
+    private val spot = Retrofit.Builder()
+        .baseUrl("https://api.binance.com/")
+        .addConverterFactory(MoshiConverterFactory.create())
+        .build()
+        .create(BinanceScannerApi::class.java)
 
-// Stage 2: cheap technical pass over a much larger universe.  
- val limiter = Semaphore(6)  
- val technical = coroutineScope {  
-     universe.map { (symbol, qv) ->  
-         async(Dispatchers.IO) {  
-             limiter.withPermit {  
-                 runCatching {  
-                     val candles = parseKlines(market.klines(symbol, "1d", 180).string())  
-                     val result = AnalysisEngine.analyze(candles, MarketFlowData(), 50, 0, null)  
-                     ScanCandidate(symbol, qv, result)  
-                 }.getOrNull()  
-             }  
-         }  
-     }.awaitAll().filterNotNull()  
- }.sortedWith(compareByDescending<ScanCandidate> { rankingScore(it) }.thenByDescending { it.quoteVolume })  
-     .take(technicalLimit)  
+    private val market = Retrofit.Builder()
+        .baseUrl("https://api.binance.com/")
+        .addConverterFactory(MoshiConverterFactory.create())
+        .build()
+        .create(BinanceSpotApi::class.java)
 
- // Stage 3: only the strongest candidates get expensive flow + news enrichment.  
- val enriched = coroutineScope {  
-     technical.take(enrichLimit).map { candidate ->  
-         async(Dispatchers.IO) {  
-             limiter.withPermit {  
-                 runCatching {  
-                     val snapshot = live.loadForScan(candidate.symbol)  
-                     val ns = news.load(candidate.symbol)  
-                     val flow = MarketFlowData(  
-                         snapshot.openInterest,  
-                         snapshot.fundingRate,  
-                         snapshot.openInterestHistory,  
-                         snapshot.longShortHistory,  
-                         snapshot.takerVolumeHistory  
-                     )  
-                     val result = AnalysisEngine.analyze(snapshot.candles, flow, ns.score, ns.confidence, snapshot.btcCandles)  
-                     candidate.copy(result = result, newsScore = ns.score, newsConfidence = ns.confidence,  
-                         flowLabel = result.moneyFlowDetails.label)  
-                 }.getOrElse { candidate }  
-             }  
-         }  
-     }.awaitAll()  
- }  
+    private val live = LiveRepository()
+    private val news = NewsRepository()
 
- (enriched + technical.drop(enrichLimit))  
-     .distinctBy { it.symbol }  
-     .sortedWith(compareByDescending<ScanCandidate> { rankingScore(it) }.thenByDescending { it.quoteVolume })  
-     .take(10)
+    /**
+     * سازگاری با MainActivity قدیمی.
+     *
+     * اگر جایی هنوز scanner.scan() را صدا بزند،
+     * Top 10 کل بازار را برمی‌گرداند.
+     */
+    suspend fun scan(
+        universeLimit: Int = 1000,
+        technicalLimit: Int = 250,
+        enrichLimit: Int = 100
+    ): List<ScanCandidate> {
+        return scanDetailed(
+            universeLimit = universeLimit,
+            technicalLimit = technicalLimit,
+            enrichLimit = enrichLimit
+        ).top10All
+    }
 
-}
+    /**
+     * خروجی کامل Scanner.
+     *
+     * top10All:
+     * بهترین 10 ارز از کل بازار قابل تحلیل
+     *
+     * top10Top100:
+     * بهترین 10 ارز در بین رتبه‌های 1 تا 100 بازار
+     */
+    suspend fun scanDetailed(
+        universeLimit: Int = 1000,
+        technicalLimit: Int = 250,
+        enrichLimit: Int = 100
+    ): MarketScanResult = withContext(Dispatchers.IO) {
 
-private fun rankingScore(c: ScanCandidate): Double {
-val result = c.result
-val flowBonus = when (result.moneyFlowDetails.label) {
-"HEAVY INFLOW" -> 8.0
-"HEAVY OUTFLOW" -> 6.0
-else -> 0.0
-}
-val confidenceWeight = result.confidence / 100.0
-val directional = maxOf(result.pump, result.dump)
-return result.score * 0.55 + directional * 0.25 + result.confidence * 0.20 + flowBonus * confidenceWeight
-}
+        // ------------------------------------------------------------
+        // مرحله 1: دریافت کل بازار
+        // ------------------------------------------------------------
 
-private fun parseKlines(raw: String): List<Candle> {
-val a = JSONArray(raw)
-val out = ArrayList<Candle>(a.length())
-for (i in 0 until a.length()) {
-val r = a.getJSONArray(i)
-out += Candle(r.getString(4).toDouble(), r.getString(2).toDouble(), r.getString(3).toDouble(), r.getString(5).toDouble())
-}
-return out
-}
+        val tickerResponse = runCatching {
+            spot.ticker24h()
+        }.getOrElse {
+            return@withContext MarketScanResult(
+                top10All = emptyList(),
+                top10Top100 = emptyList(),
+                analyzedCount = 0,
+                universeCount = 0
+            )
+        }
+
+        val rawTicker = runCatching {
+            tickerResponse.string()
+        }.getOrDefault("[]")
+
+        val tickers = runCatching {
+            JSONArray(rawTicker)
+        }.getOrDefault(JSONArray())
+
+        val stableCoins = setOf(
+            "USDCUSDT",
+            "BUSDUSDT",
+            "TUSDUSDT",
+            "FDUSDUSDT",
+            "USDPUSDT",
+            "DAIUSDT",
+            "USDEUSDT",
+            "USD1USDT"
+        )
+
+        val symbols = mutableListOf<Pair<String, Double>>()
+
+        for (i in 0 until tickers.length()) {
+            val obj = tickers.optJSONObject(i) ?: continue
+
+            val symbol = normalizeSymbol(
+                obj.optString("symbol")
+            )
+
+            if (symbol.isBlank()) continue
+            if (!symbol.endsWith("USDT")) continue
+            if (stableCoins.contains(symbol)) continue
+
+            val quoteVolume = obj.optDouble(
+                "quoteVolume",
+                0.0
+            )
+
+            if (!quoteVolume.isFinite()) continue
+            if (quoteVolume <= 0.0) continue
+
+            symbols += symbol to quoteVolume
+        }
+
+        /**
+         * بازار بر اساس حجم 24 ساعته مرتب می‌شود.
+         *
+         * rank 1 = بیشترین حجم 24h
+         */
+        val universe = symbols
+            .distinctBy { it.first }
+            .sortedByDescending { it.second }
+            .take(universeLimit)
+
+        if (universe.isEmpty()) {
+            return@withContext MarketScanResult(
+                top10All = emptyList(),
+                top10Top100 = emptyList(),
+                analyzedCount = 0,
+                universeCount = 0
+            )
+        }
+
+        // ------------------------------------------------------------
+        // مرحله 2: تحلیل تکنیکال اولیه کل بازار
+        // ------------------------------------------------------------
+
+        val technicalLimiter = Semaphore(8)
+
+        val technicalCandidates = coroutineScope {
+
+            universe.mapIndexed { index, (symbol, quoteVolume) ->
+
+                async(Dispatchers.IO) {
+
+                    technicalLimiter.withPermit {
+
+                        runCatching {
+
+                            val candlesRaw = market
+                                .klines(
+                                    symbol,
+                                    "1d",
+                                    180
+                                )
+                                .string()
+
+                            val candles = parseKlines(candlesRaw)
+
+                            if (candles.size < 60) {
+                                return@runCatching null
+                            }
+
+                            val preliminary = AnalysisEngine.analyze(
+                                candles = candles,
+                                marketFlow = MarketFlowData(),
+                                newsScore = 50,
+                                newsConfidence = 0,
+                                btcCandles = null
+                            )
+
+                            ScanCandidate(
+                                symbol = symbol,
+                                quoteVolume = quoteVolume,
+                                result = preliminary
+                            )
+
+                        }.getOrNull()
+                    }
+                }
+            }.awaitAll()
+                .filterNotNull()
+        }
+
+        if (technicalCandidates.isEmpty()) {
+            return@withContext MarketScanResult(
+                top10All = emptyList(),
+                top10Top100 = emptyList(),
+                analyzedCount = 0,
+                universeCount = universe.size
+            )
+        }
+
+        // ------------------------------------------------------------
+        // مرحله 3: رتبه‌بندی اولیه
+        // ------------------------------------------------------------
+
+        val rankedTechnical = technicalCandidates
+            .sortedWith(
+                compareByDescending<ScanCandidate> {
+                    rankingScore(it)
+                }.thenByDescending {
+                    it.quoteVolume
+                }
+            )
+
+        /**
+         * دو گروه مهم:
+         *
+         * 1) بهترین کاندیداهای کل بازار
+         * 2) تمام کاندیداهای داخل 100 رتبه اول
+         *
+         * بعداً اطلاعات Live و News برای این گروه‌ها تکمیل می‌شود.
+         */
+
+        val top100Universe = universe
+            .take(100)
+            .map { it.first }
+            .toSet()
+
+        val technicalTop100 = rankedTechnical
+            .filter { top100Universe.contains(it.symbol) }
+            .take(100)
+
+        val technicalTopOverall = rankedTechnical
+            .take(technicalLimit)
+
+        /**
+         * برای جلوگیری از درخواست‌های تکراری،
+         * کاندیداهای دو گروه را یکی می‌کنیم.
+         */
+        val enrichCandidates = (
+            technicalTop100 +
+                technicalTopOverall
+            )
+            .distinctBy { it.symbol }
+            .take(
+                maxOf(
+                    enrichLimit,
+                    technicalTop100.size
+                )
+            )
+
+        // ------------------------------------------------------------
+        // مرحله 4: تکمیل Live + Money Flow + News
+        // ------------------------------------------------------------
+
+        val enrichLimiter = Semaphore(6)
+
+        val enrichedCandidates = coroutineScope {
+
+            enrichCandidates.map { candidate ->
+
+                async(Dispatchers.IO) {
+
+                    enrichLimiter.withPermit {
+
+                        runCatching {
+
+                            val snapshot = live.loadForScan(
+                                candidate.symbol
+                            )
+
+                            val newsSnapshot = news.load(
+                                candidate.symbol
+                            )
+
+                            val marketFlow = MarketFlowData(
+                                openInterest = snapshot.openInterest,
+                                fundingRate = snapshot.fundingRate,
+                                openInterestHistory =
+                                    snapshot.openInterestHistory,
+                                longShortHistory =
+                                    snapshot.longShortHistory,
+                                takerVolumeHistory =
+                                    snapshot.takerVolumeHistory
+                            )
+
+                            val finalResult =
+                                AnalysisEngine.analyze(
+                                    candles = snapshot.candles,
+                                    marketFlow = marketFlow,
+                                    newsScore = newsSnapshot.score,
+                                    newsConfidence = newsSnapshot.confidence,
+                                    btcCandles = snapshot.btcCandles
+                                )
+
+                            candidate.copy(
+                                result = finalResult,
+                                newsScore = newsSnapshot.score,
+                                newsConfidence =
+                                    newsSnapshot.confidence,
+                                flowLabel =
+                                    finalResult.moneyFlowDetails.label
+                            )
+
+                        }.getOrElse {
+                            candidate
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+        // ------------------------------------------------------------
+        // مرحله 5: اضافه کردن کاندیداهای تحلیل‌شده
+        // ------------------------------------------------------------
+
+        val enrichedMap = enrichedCandidates.associateBy {
+            it.symbol
+        }
+
+        val finalCandidates = technicalCandidates.map { candidate ->
+            enrichedMap[candidate.symbol] ?: candidate
+        }
+
+        // ------------------------------------------------------------
+        // مرحله 6: Top 10 کل بازار
+        // ------------------------------------------------------------
+
+        val top10All = finalCandidates
+            .sortedWith(
+                compareByDescending<ScanCandidate> {
+                    finalRankingScore(it)
+                }.thenByDescending {
+                    it.quoteVolume
+                }
+            )
+            .take(10)
+
+        // ------------------------------------------------------------
+        // مرحله 7: Top 10 در بین رتبه‌های 1 تا 100
+        // ------------------------------------------------------------
+
+        val top10Top100 = finalCandidates
+            .filter {
+                top100Universe.contains(it.symbol)
+            }
+            .sortedWith(
+                compareByDescending<ScanCandidate> {
+                    finalRankingScore(it)
+                }.thenByDescending {
+                    it.quoteVolume
+                }
+            )
+            .take(10)
+
+        MarketScanResult(
+            top10All = top10All,
+            top10Top100 = top10Top100,
+            analyzedCount = finalCandidates.size,
+            universeCount = universe.size
+        )
+    }
+
+    // ----------------------------------------------------------------
+    // Ranking
+    // ----------------------------------------------------------------
+
+    /**
+     * رتبه‌بندی اولیه.
+     *
+     * قبل از دریافت Live/News استفاده می‌شود.
+     */
+    private fun rankingScore(
+        candidate: ScanCandidate
+    ): Double {
+
+        val result = candidate.result
+
+        val directional =
+            maxOf(
+                result.pump,
+                result.dump
+            )
+
+        val confidence =
+            result.confidence
+                .coerceIn(0, 100)
+
+        val scoreDistance =
+            kotlin.math.abs(
+                result.score - 50
+            )
+
+        val moneyFlowScore =
+            result.moneyFlowDetails.score
+                .coerceIn(0, 100)
+
+        val flowStrength =
+            kotlin.math.abs(
+                moneyFlowScore - 50
+            )
+
+        return (
+            scoreDistance * 0.40 +
+                directional * 0.20 +
+                confidence * 0.20 +
+                flowStrength * 0.20
+            )
+    }
+
+    /**
+     * رتبه‌بندی نهایی بعد از دریافت:
+     *
+     * Technical
+     * Money Flow
+     * News
+     * Confidence
+     * Pump/Dump
+     * Structure
+     * Divergence
+     * BTC regime
+     */
+    private fun finalRankingScore(
+        candidate: ScanCandidate
+    ): Double {
+
+        val result = candidate.result
+
+        val directional =
+            maxOf(
+                result.pump,
+                result.dump
+            ).coerceIn(0, 100)
+
+        val confidence =
+            result.confidence.coerceIn(0, 100)
+
+        val scoreStrength =
+            kotlin.math.abs(
+                result.score - 50
+            ).coerceIn(0, 50) * 2.0
+
+        val moneyFlowStrength =
+            kotlin.math.abs(
+                result.moneyFlow - 50
+            ).coerceIn(0, 50) * 2.0
+
+        val newsStrength =
+            kotlin.math.abs(
+                result.news - 50
+            ).coerceIn(0, 50) * 2.0
+
+        val structureStrength =
+            kotlin.math.abs(
+                result.structure.score - 50
+            ).coerceIn(0, 50) * 2.0
+
+        val divergenceStrength =
+            kotlin.math.abs(
+                result.divergence.score - 50
+            ).coerceIn(0, 50) * 2.0
+
+        val flowBonus =
+            when {
+                isHeavyInflow(result.moneyFlowDetails.label) ->
+                    8.0
+
+                isHeavyOutflow(result.moneyFlowDetails.label) ->
+                    8.0
+
+                else ->
+                    0.0
+            }
+
+        /**
+         * اگر Money Flow با جهت اصلی بازار کاملاً مخالف باشد،
+         * امتیاز نهایی کاهش پیدا می‌کند.
+         */
+        val moneyConflictPenalty =
+            when {
+                result.score >= 65 &&
+                    isHeavyOutflow(result.moneyFlowDetails.label) ->
+                    8.0
+
+                result.score <= 35 &&
+                    isHeavyInflow(result.moneyFlowDetails.label) ->
+                    8.0
+
+                else ->
+                    0.0
+            }
+
+        return (
+            scoreStrength * 0.34 +
+                directional * 0.16 +
+                confidence * 0.18 +
+                moneyFlowStrength * 0.12 +
+                newsStrength * 0.07 +
+                structureStrength * 0.05 +
+                divergenceStrength * 0.04 +
+                flowBonus -
+                moneyConflictPenalty
+            )
+    }
+
+    // ----------------------------------------------------------------
+    // Money Flow label helpers
+    // ----------------------------------------------------------------
+
+    private fun isHeavyInflow(
+        label: String
+    ): Boolean {
+
+        val normalized = label
+            .trim()
+            .uppercase()
+
+        return normalized.contains("HEAVY INFLOW") ||
+            normalized.contains("INFLOW HEAVY") ||
+            label.contains("ورود سنگین") ||
+            label.contains("ورود غیرعادی")
+    }
+
+    private fun isHeavyOutflow(
+        label: String
+    ): Boolean {
+
+        val normalized = label
+            .trim()
+            .uppercase()
+
+        return normalized.contains("HEAVY OUTFLOW") ||
+            normalized.contains("OUTFLOW HEAVY") ||
+            label.contains("خروج سنگین") ||
+            label.contains("خروج غیرعادی")
+    }
+
+    // ----------------------------------------------------------------
+    // Symbol normalization
+    // ----------------------------------------------------------------
+
+    private fun normalizeSymbol(
+        raw: String
+    ): String {
+
+        var symbol = raw
+            .trim()
+            .uppercase()
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
+
+        if (symbol.isBlank()) {
+            return ""
+        }
+
+        if (!symbol.endsWith("USDT")) {
+            symbol += "USDT"
+        }
+
+        return symbol
+    }
+
+    // ----------------------------------------------------------------
+    // Kline parser
+    // ----------------------------------------------------------------
+
+    private fun parseKlines(
+        raw: String
+    ): List<Candle> {
+
+        val array = runCatching {
+            JSONArray(raw)
+        }.getOrElse {
+            return emptyList()
+        }
+
+        val output = ArrayList<Candle>(
+            array.length()
+        )
+
+        for (i in 0 until array.length()) {
+
+            val row = array.optJSONArray(i)
+                ?: continue
+
+            if (row.length() < 8) {
+                continue
+            }
+
+            runCatching {
+
+                val openTime =
+                    row.optLong(0, 0L)
+
+                val high =
+                    row.optString(2)
+                        .toDoubleOrNull()
+                        ?: return@runCatching
+
+                val low =
+                    row.optString(3)
+                        .toDoubleOrNull()
+                        ?: return@runCatching
+
+                val close =
+                    row.optString(4)
+                        .toDoubleOrNull()
+                        ?: return@runCatching
+
+                val volume =
+                    row.optString(5)
+                        .toDoubleOrNull()
+                        ?: 0.0
+
+                val quoteVolume =
+                    row.optString(7)
+                        .toDoubleOrNull()
+                        ?: 0.0
+
+                if (
+                    close <= 0.0 ||
+                    high <= 0.0 ||
+                    low <= 0.0
+                ) {
+                    return@runCatching
+                }
+
+                output += Candle(
+                    close = close,
+                    high = high,
+                    low = low,
+                    volume = volume,
+                    quoteVolume = quoteVolume,
+                    openTime = openTime
+                )
+            }
+        }
+
+        return output
+    }
 }
