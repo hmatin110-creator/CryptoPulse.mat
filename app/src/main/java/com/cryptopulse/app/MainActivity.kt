@@ -16,13 +16,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -55,7 +59,7 @@ private fun CryptoAnalysisScreen() {
         mutableStateOf("BTCUSDT")
     }
 
-    var result by remember {
+    var analysisResult by remember {
         mutableStateOf<AnalysisResult?>(null)
     }
 
@@ -72,6 +76,7 @@ private fun CryptoAnalysisScreen() {
     }
 
     fun analyzeCoin() {
+
         scope.launch {
 
             loading = true
@@ -79,15 +84,16 @@ private fun CryptoAnalysisScreen() {
 
             runCatching {
 
-                val repository = LiveRepository()
-
                 val normalized =
                     normalizeSymbol(symbol)
+
+                val repository =
+                    LiveRepository()
 
                 val snapshot =
                     repository.load(normalized)
 
-                val news =
+                val newsSnapshot =
                     NewsRepository().load(normalized)
 
                 val flow =
@@ -106,22 +112,25 @@ private fun CryptoAnalysisScreen() {
 
                 AnalysisEngine.analyze(
                     candles = snapshot.candles,
-                    marketFlow = flow,
-                    newsScore = news.score,
-                    newsConfidence = news.confidence,
-                    btcCandles = snapshot.btcCandles
+                    flow = flow,
+                    newsScore = newsSnapshot.score,
+                    newsConfidence =
+                        newsSnapshot.confidence,
+                    btcCandles =
+                        snapshot.btcCandles
                 )
 
-            }.onSuccess {
+            }.onSuccess { result ->
 
-                result = it
+                analysisResult = result
                 message = "تحلیل کامل شد."
 
-            }.onFailure {
+            }.onFailure { error ->
 
-                result = null
+                analysisResult = null
+
                 message =
-                    "خطا در تحلیل: ${it.message ?: "خطای نامشخص"}"
+                    "خطا در تحلیل: ${error.message ?: "خطای نامشخص"}"
             }
 
             loading = false
@@ -134,7 +143,7 @@ private fun CryptoAnalysisScreen() {
 
             loading = true
             message =
-                "در حال اسکن کل بازار و رتبه‌بندی ارزها..."
+                "در حال اسکن کل بازار..."
 
             runCatching {
 
@@ -144,19 +153,19 @@ private fun CryptoAnalysisScreen() {
                     enrichLimit = 100
                 )
 
-            }.onSuccess {
+            }.onSuccess { result ->
 
-                scanResult = it
+                scanResult = result
 
                 message =
-                    "اسکن بازار کامل شد. ${it.analyzedCount} ارز تحلیل شدند."
+                    "اسکن کامل شد. ${result.analyzedCount} ارز تحلیل شدند."
 
-            }.onFailure {
+            }.onFailure { error ->
 
                 scanResult = null
 
                 message =
-                    "خطا در اسکن بازار: ${it.message ?: "خطای نامشخص"}"
+                    "خطا در اسکن بازار: ${error.message ?: "خطای نامشخص"}"
             }
 
             loading = false
@@ -175,7 +184,8 @@ private fun CryptoAnalysisScreen() {
 
             Text(
                 text = "CryptoAnalysis",
-                style = MaterialTheme.typography.headlineMedium
+                style =
+                    MaterialTheme.typography.headlineMedium
             )
 
             Spacer(
@@ -185,7 +195,8 @@ private fun CryptoAnalysisScreen() {
             Text(
                 text =
                     "تحلیل تکنیکال + Money Flow + News + Market Structure",
-                style = MaterialTheme.typography.bodyMedium
+                style =
+                    MaterialTheme.typography.bodyMedium
             )
         }
 
@@ -194,7 +205,8 @@ private fun CryptoAnalysisScreen() {
             OutlinedTextField(
                 value = symbol,
                 onValueChange = {
-                    symbol = it.uppercase(Locale.US)
+                    symbol =
+                        it.uppercase(Locale.US)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 label = {
@@ -262,39 +274,40 @@ private fun CryptoAnalysisScreen() {
 
                     Text(
                         text = message,
-                        modifier = Modifier.padding(12.dp)
+                        modifier =
+                            Modifier.padding(12.dp)
                     )
                 }
             }
         }
 
-        result?.let { analysis ->
+        analysisResult?.let { result ->
 
             item {
 
                 FinalResultCard(
-                    result = analysis
+                    result = result
                 )
             }
 
             item {
 
                 AnalysisSummaryCard(
-                    result = analysis
+                    result = result
                 )
             }
 
             item {
 
                 MoneyFlowCard(
-                    result = analysis
+                    result = result
                 )
             }
 
             item {
 
                 TradePlanCard(
-                    result = analysis
+                    result = result
                 )
             }
         }
@@ -314,10 +327,8 @@ private fun CryptoAnalysisScreen() {
 
                 Text(
                     text =
-                        "تعداد بازار بررسی‌شده: ${scan.universeCount}\n" +
-                        "تعداد ارز تحلیل‌شده: ${scan.analyzedCount}",
-                    style =
-                        MaterialTheme.typography.bodyMedium
+                        "بازار بررسی‌شده: ${scan.universeCount}\n" +
+                        "ارزهای تحلیل‌شده: ${scan.analyzedCount}"
                 )
             }
 
@@ -344,7 +355,8 @@ private fun CryptoAnalysisScreen() {
                 )
 
                 Text(
-                    text = "🏆 Top 10 در بین رتبه‌های 1 تا 100",
+                    text =
+                        "🏆 Top 10 بین رتبه‌های 1 تا 100",
                     style =
                         MaterialTheme.typography.titleLarge
                 )
@@ -360,9 +372,13 @@ private fun CryptoAnalysisScreen() {
 
         item {
 
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
             Text(
                 text =
-                    "هشدار: تحلیل‌ها تخمینی و آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                    "هشدار: نتایج تحلیل آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
                 style =
                     MaterialTheme.typography.bodySmall
             )
@@ -383,13 +399,14 @@ private fun FinalResultCard(
     ) {
 
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier =
+                Modifier.padding(16.dp),
             verticalArrangement =
                 Arrangement.spacedBy(8.dp)
         ) {
 
             Text(
-                text = "نتیجه نهایی تحلیل",
+                text = "🎯 نتیجه نهایی",
                 style =
                     MaterialTheme.typography.titleLarge
             )
@@ -432,12 +449,15 @@ private fun FinalResultCard(
 
             Text(
                 text =
-                    "Trend Score: ${result.trend}/100"
+                    "Trend: ${result.trend}/100"
             )
 
             if (result.reasons.isNotEmpty()) {
 
-                Divider()
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
 
                 Text(
                     text = "دلایل اصلی",
@@ -445,12 +465,14 @@ private fun FinalResultCard(
                         MaterialTheme.typography.titleMedium
                 )
 
-                result.reasons.take(8).forEach {
+                result.reasons
+                    .take(8)
+                    .forEach { reason ->
 
-                    Text(
-                        text = "• $it"
-                    )
-                }
+                        Text(
+                            text = "• $reason"
+                        )
+                    }
             }
         }
     }
@@ -466,7 +488,8 @@ private fun AnalysisSummaryCard(
     ) {
 
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier =
+                Modifier.padding(16.dp),
             verticalArrangement =
                 Arrangement.spacedBy(6.dp)
         ) {
@@ -494,12 +517,15 @@ private fun AnalysisSummaryCard(
 
             Text(
                 text =
-                    "News Confidence: ${result.news}/100"
+                    "News: ${result.news}/100"
             )
 
             if (result.timeframeScores.isNotEmpty()) {
 
-                Divider()
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
 
                 Text(
                     text = "امتیاز تایم‌فریم‌ها",
@@ -508,11 +534,11 @@ private fun AnalysisSummaryCard(
                 )
 
                 result.timeframeScores
-                    .forEach { (frame, score) ->
+                    .forEach { entry ->
 
                         Text(
                             text =
-                                "$frame : $score"
+                                "${entry.key}: ${entry.value}"
                         )
                     }
             }
@@ -533,13 +559,14 @@ private fun MoneyFlowCard(
     ) {
 
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier =
+                Modifier.padding(16.dp),
             verticalArrangement =
                 Arrangement.spacedBy(7.dp)
         ) {
 
             Text(
-                text = "Money Flow",
+                text = "💰 Money Flow",
                 style =
                     MaterialTheme.typography.titleLarge
             )
@@ -561,26 +588,34 @@ private fun MoneyFlowCard(
 
             if (flow.reasons.isNotEmpty()) {
 
-                flow.reasons.take(8).forEach {
+                flow.reasons
+                    .take(8)
+                    .forEach { reason ->
 
-                    Text(
-                        text = "• $it"
-                    )
-                }
+                        Text(
+                            text = "• $reason"
+                        )
+                    }
             }
 
             if (flow.periods.isNotEmpty()) {
 
-                Divider()
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
 
                 Text(
-                    text = "بررسی جریان پول در تایم‌فریم‌ها",
+                    text = "جریان پول در تایم‌فریم‌ها",
                     style =
                         MaterialTheme.typography.titleMedium
                 )
 
                 flow.periods
-                    .forEach { (_, period) ->
+                    .forEach { entry ->
+
+                        val period =
+                            entry.value
 
                         Text(
                             text =
@@ -589,7 +624,11 @@ private fun MoneyFlowCard(
 
                         Text(
                             text =
-                                "ورود: ${formatMoney(period.inflowUsd)} | " +
+                                "ورود: ${formatMoney(period.inflowUsd)}"
+                        )
+
+                        Text(
+                            text =
                                 "خروج: ${formatMoney(period.outflowUsd)}"
                         )
 
@@ -609,28 +648,29 @@ private fun TradePlanCard(
 ) {
 
     val plan =
-        result.tradePlan ?: return
+        result.tradePlan
+            ?: return
 
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier =
+                Modifier.padding(16.dp),
             verticalArrangement =
                 Arrangement.spacedBy(6.dp)
         ) {
 
             Text(
-                text = "Trade Plan",
+                text = "📌 Trade Plan",
                 style =
                     MaterialTheme.typography.titleLarge
             )
 
             Text(
                 text =
-                    "Entry: ${formatPrice(plan.entryLow)} - " +
-                    formatPrice(plan.entryHigh)
+                    "Entry: ${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}"
             )
 
             Text(
@@ -650,7 +690,7 @@ private fun TradePlanCard(
 
             Text(
                 text =
-                    "Risk / Reward: ${"%.2f".format(plan.riskReward)}"
+                    "Risk / Reward: ${formatRR(plan.riskReward)}"
             )
         }
     }
@@ -669,27 +709,27 @@ private fun CandidateCard(
     ) {
 
         Column(
-            modifier = Modifier.padding(14.dp),
+            modifier =
+                Modifier.padding(14.dp),
             verticalArrangement =
                 Arrangement.spacedBy(5.dp)
         ) {
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier =
+                    Modifier.fillMaxWidth(),
                 horizontalArrangement =
                     Arrangement.SpaceBetween
             ) {
 
                 Text(
-                    text =
-                        candidate.symbol,
+                    text = candidate.symbol,
                     style =
                         MaterialTheme.typography.titleLarge
                 )
 
                 Text(
-                    text =
-                        finalSignal(result),
+                    text = finalSignal(result),
                     style =
                         MaterialTheme.typography.titleMedium
                 )
@@ -729,14 +769,21 @@ private fun CandidateCard(
 
                 Text(
                     text =
-                        "Entry: ${formatPrice(plan.entryLow)} - " +
-                        formatPrice(plan.entryHigh)"
+                        "Entry: ${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}"
                 )
 
                 Text(
                     text =
-                        "SL: ${formatPrice(plan.stopLoss)} | " +
-                        "TP1: ${formatPrice(plan.tp1)} | " +
+                        "SL: ${formatPrice(plan.stopLoss)}"
+                )
+
+                Text(
+                    text =
+                        "TP1: ${formatPrice(plan.tp1)}"
+                )
+
+                Text(
+                    text =
                         "TP2: ${formatPrice(plan.tp2)}"
                 )
             }
@@ -778,16 +825,6 @@ private fun finalSignal(
             result.moneyFlowDetails.label
         )
 
-    /**
-     * STRONG BUY
-     *
-     * باید چند شرط هم‌زمان وجود داشته باشد:
-     * - Score بالا
-     * - Confidence بالا
-     * - Pump بالا
-     * - Money Flow قوی
-     * - خبر منفی شدید مانع نباشد
-     */
     if (
         score >= 82 &&
         confidence >= 75 &&
@@ -799,9 +836,6 @@ private fun finalSignal(
         return "🟢 STRONG BUY"
     }
 
-    /**
-     * STRONG SELL
-     */
     if (
         score <= 25 &&
         confidence >= 75 &&
@@ -839,9 +873,12 @@ private fun isHeavyInflow(
 ): Boolean {
 
     val normalized =
-        label.uppercase(Locale.US)
+        label
+            .trim()
+            .uppercase(Locale.US)
 
     return normalized.contains("HEAVY INFLOW") ||
+        normalized.contains("INFLOW HEAVY") ||
         label.contains("ورود سنگین") ||
         label.contains("ورود غیرعادی")
 }
@@ -851,9 +888,12 @@ private fun isHeavyOutflow(
 ): Boolean {
 
     val normalized =
-        label.uppercase(Locale.US)
+        label
+            .trim()
+            .uppercase(Locale.US)
 
     return normalized.contains("HEAVY OUTFLOW") ||
+        normalized.contains("OUTFLOW HEAVY") ||
         label.contains("خروج سنگین") ||
         label.contains("خروج غیرعادی")
 }
@@ -886,32 +926,36 @@ private fun formatMoney(
     value: Double
 ): String {
 
-    val absValue =
+    val absolute =
         abs(value)
 
     return when {
 
-        absValue >= 1_000_000_000 ->
-            "$%.2fB".format(
+        absolute >= 1_000_000_000.0 ->
+            "$" + String.format(
                 Locale.US,
+                "%.2fB",
                 value / 1_000_000_000.0
             )
 
-        absValue >= 1_000_000 ->
-            "$%.2fM".format(
+        absolute >= 1_000_000.0 ->
+            "$" + String.format(
                 Locale.US,
+                "%.2fM",
                 value / 1_000_000.0
             )
 
-        absValue >= 1_000 ->
-            "$%.2fK".format(
+        absolute >= 1_000.0 ->
+            "$" + String.format(
                 Locale.US,
+                "%.2fK",
                 value / 1_000.0
             )
 
         else ->
-            "$%.2f".format(
+            "$" + String.format(
                 Locale.US,
+                "%.2f",
                 value
             )
     }
@@ -923,22 +967,36 @@ private fun formatPrice(
 
     return when {
 
-        value >= 1000 ->
-            "%.2f".format(
+        value >= 1000.0 ->
+            String.format(
                 Locale.US,
+                "%.2f",
                 value
             )
 
-        value >= 1 ->
-            "%.4f".format(
+        value >= 1.0 ->
+            String.format(
                 Locale.US,
+                "%.4f",
                 value
             )
 
         else ->
-            "%.8f".format(
+            String.format(
                 Locale.US,
+                "%.8f",
                 value
             )
     }
+}
+
+private fun formatRR(
+    value: Double
+): String {
+
+    return String.format(
+        Locale.US,
+        "%.2f",
+        value
+    )
 }
