@@ -1,2242 +1,944 @@
 package com.cryptopulse.app
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
-
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        scheduleAutoLearning(this)
-
         setContent {
-            CryptoPulseApp()
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    CryptoAnalysisScreen()
+                }
+            }
         }
     }
 }
 
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CryptoPulseApp() {
+private fun CryptoAnalysisScreen() {
 
-    val presetCoins = listOf(
-        "BTCUSDT",
-        "ETHUSDT",
-        "SOLUSDT",
-        "XRPUSDT",
-        "DOGEUSDT"
-    )
+    val scope = rememberCoroutineScope()
 
-    var selected by remember {
+    var symbol by remember {
         mutableStateOf("BTCUSDT")
-    }
-
-    var customSymbol by remember {
-        mutableStateOf("")
-    }
-
-    var loading by remember {
-        mutableStateOf(false)
-    }
-
-    var error by remember {
-        mutableStateOf<String?>(null)
     }
 
     var result by remember {
         mutableStateOf<AnalysisResult?>(null)
     }
 
-    var optimization by remember {
-        mutableStateOf<OptimizationReport?>(null)
+    var scanResult by remember {
+        mutableStateOf<MarketScanResult?>(null)
     }
 
-    var optimizeLoading by remember {
+    var loading by remember {
         mutableStateOf(false)
     }
 
-    var backtest by remember {
-        mutableStateOf<BacktestStats?>(null)
+    var message by remember {
+        mutableStateOf("")
     }
 
-    var backtestLoading by remember {
-        mutableStateOf(false)
-    }
-
-    var scanLoading by remember {
-        mutableStateOf(false)
-    }
-
-    var scanResults by remember {
-        mutableStateOf<List<ScanCandidate>>(emptyList())
-    }
-
-    var news by remember {
-        mutableStateOf<NewsSnapshot?>(null)
-    }
-
-    val context = LocalContext.current
-
-    var learningStatus by remember {
-        mutableStateOf(
-            AutoLearningStore.status(context)
-        )
-    }
-
-    val scope = rememberCoroutineScope()
-
-    val repo = remember {
-        LiveRepository()
-    }
-
-    val newsRepo = remember {
-        NewsRepository()
-    }
-
-    val scanner = remember {
-        MarketScanner()
-    }
-
-
-    fun normalizeSymbol(value: String): String {
-
-        val cleaned = value
-            .trim()
-            .uppercase(Locale.US)
-            .replace(" ", "")
-            .replace("/", "")
-            .replace("-", "")
-
-        return if (cleaned.endsWith("USDT")) {
-            cleaned
-        } else {
-            "${cleaned}USDT"
-        }
-    }
-
-
-    fun refresh(symbol: String = selected) {
-
-        val normalized = normalizeSymbol(symbol)
-
-        if (normalized.length < 6) {
-            error = "نماد ارز معتبر نیست"
-            return
-        }
-
-        selected = normalized
-
+    fun analyzeCoin() {
         scope.launch {
 
             loading = true
-            error = null
+            message = "در حال تحلیل $symbol ..."
 
             runCatching {
 
-                repo.load(normalized)
+                val repository = LiveRepository()
 
-            }.onSuccess { live ->
+                val normalized =
+                    normalizeSymbol(symbol)
 
-                val ns = runCatching {
+                val snapshot =
+                    repository.load(normalized)
 
-                    newsRepo.load(normalized)
+                val news =
+                    NewsRepository().load(normalized)
 
-                }.getOrElse {
-
-                    NewsSnapshot(
-                        items = emptyList(),
-                        score = 50,
-                        confidence = 0,
-                        bullishCount = 0,
-                        bearishCount = 0,
-                        marketMovingCount = 0
-                    )
-                }
-
-                news = ns
-
-                result = AnalysisEngine.analyze(
-
-                    live.candles,
-
+                val flow =
                     MarketFlowData(
-                        live.openInterest,
-                        live.fundingRate,
-                        live.openInterestHistory,
-                        live.longShortHistory,
-                        live.takerVolumeHistory
-                    ),
+                        openInterest =
+                            snapshot.openInterest,
+                        fundingRate =
+                            snapshot.fundingRate,
+                        openInterestHistory =
+                            snapshot.openInterestHistory,
+                        longShortHistory =
+                            snapshot.longShortHistory,
+                        takerVolumeHistory =
+                            snapshot.takerVolumeHistory
+                    )
 
-                    ns.score,
-                    ns.confidence,
-                    live.btcCandles
+                AnalysisEngine.analyze(
+                    candles = snapshot.candles,
+                    marketFlow = flow,
+                    newsScore = news.score,
+                    newsConfidence = news.confidence,
+                    btcCandles = snapshot.btcCandles
                 )
+
+            }.onSuccess {
+
+                result = it
+                message = "تحلیل کامل شد."
 
             }.onFailure {
 
-                error =
-                    it.message
-                        ?: "خطا در دریافت داده بازار"
+                result = null
+                message =
+                    "خطا در تحلیل: ${it.message ?: "خطای نامشخص"}"
             }
 
             loading = false
         }
     }
 
-
-    fun runOptimization() {
-
-        scope.launch {
-
-            optimizeLoading = true
-
-            runCatching {
-
-                repo.load(selected)
-
-            }.onSuccess { live ->
-
-                optimization =
-                    WeightOptimizer.optimize(
-                        live.candles,
-                        listOf(3, 7, 14, 30),
-                        AutoLearningStore.getWeights(context)
-                    )
-
-                learningStatus =
-                    AutoLearningStore.status(context)
-            }
-
-            optimizeLoading = false
-        }
-    }
-
-
-    fun runBacktest() {
-
-        scope.launch {
-
-            backtestLoading = true
-
-            runCatching {
-
-                repo.load(selected)
-
-            }.onSuccess { live ->
-
-                backtest =
-                    BacktestEngine.run(
-                        live.candles,
-                        listOf(3, 7, 14, 30),
-                        3
-                    )
-            }
-
-            backtestLoading = false
-        }
-    }
-
-
     fun scanMarket() {
 
         scope.launch {
 
-            scanLoading = true
+            loading = true
+            message =
+                "در حال اسکن کل بازار و رتبه‌بندی ارزها..."
 
             runCatching {
 
-                scanner.scan(
-                    120,
-                    35,
-                    12
+                MarketScanner().scanDetailed(
+                    universeLimit = 1000,
+                    technicalLimit = 250,
+                    enrichLimit = 100
                 )
 
             }.onSuccess {
 
-                scanResults = it
+                scanResult = it
+
+                message =
+                    "اسکن بازار کامل شد. ${it.analyzedCount} ارز تحلیل شدند."
+
+            }.onFailure {
+
+                scanResult = null
+
+                message =
+                    "خطا در اسکن بازار: ${it.message ?: "خطای نامشخص"}"
             }
 
-            scanLoading = false
+            loading = false
         }
     }
 
-
-    LaunchedEffect(Unit) {
-        refresh("BTCUSDT")
-    }
-
-
-    MaterialTheme(
-
-        colorScheme = darkColorScheme(
-
-            primary = Color(0xFF00D4FF),
-
-            secondary = Color(0xFF7C4DFF),
-
-            background = Color(0xFF07111F),
-
-            surface = Color(0xFF101C2E),
-
-            surfaceVariant = Color(0xFF18263A)
-        )
-
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
     ) {
 
-        Scaffold(
+        item {
 
-            containerColor =
-                MaterialTheme.colorScheme.background,
+            Text(
+                text = "CryptoAnalysis",
+                style = MaterialTheme.typography.headlineMedium
+            )
 
-            topBar = {
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
 
-                TopAppBar(
+            Text(
+                text =
+                    "تحلیل تکنیکال + Money Flow + News + Market Structure",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
 
-                    colors =
-                        TopAppBarDefaults.topAppBarColors(
-                            containerColor =
-                                Color(0xFF091625)
-                        ),
+        item {
 
-                    title = {
+            OutlinedTextField(
+                value = symbol,
+                onValueChange = {
+                    symbol = it.uppercase(Locale.US)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = {
+                    Text("نماد ارز")
+                },
+                placeholder = {
+                    Text("مثلاً BTCUSDT")
+                },
+                singleLine = true
+            )
+        }
 
-                        Column {
+        item {
 
-                            Text(
-                                "CryptoPulse",
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
 
-                            Text(
-                                "AI Crypto Market Analyzer",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .labelSmall
-                            )
-                        }
-                    }
+                Button(
+                    onClick = {
+                        analyzeCoin()
+                    },
+                    enabled = !loading,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("تحلیل ارز")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        scanMarket()
+                    },
+                    enabled = !loading,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("اسکن بازار")
+                }
+            }
+        }
+
+        if (loading) {
+
+            item {
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.Center
+                ) {
+
+                    CircularProgressIndicator()
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+
+            item {
+
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Text(
+                        text = message,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+
+        result?.let { analysis ->
+
+            item {
+
+                FinalResultCard(
+                    result = analysis
                 )
             }
 
-        ) { padding ->
+            item {
 
-            LazyColumn(
+                AnalysisSummaryCard(
+                    result = analysis
+                )
+            }
 
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(horizontal = 14.dp),
+            item {
 
-                verticalArrangement =
-                    Arrangement.spacedBy(12.dp),
+                MoneyFlowCard(
+                    result = analysis
+                )
+            }
 
-                contentPadding =
-                    PaddingValues(
-                        top = 14.dp,
-                        bottom = 30.dp
-                    )
-            ) {
+            item {
 
+                TradePlanCard(
+                    result = analysis
+                )
+            }
+        }
 
-                // --------------------------------------------------
-                // CUSTOM COIN
-                // --------------------------------------------------
+        scanResult?.let { scan ->
 
-                item {
+            item {
 
-                    Card(
-                        shape =
-                            RoundedCornerShape(20.dp)
-                    ) {
+                Text(
+                    text = "نتیجه نهایی اسکن بازار",
+                    style =
+                        MaterialTheme.typography.headlineSmall
+                )
+            }
 
-                        Column(
+            item {
 
-                            modifier =
-                                Modifier.padding(16.dp),
+                Text(
+                    text =
+                        "تعداد بازار بررسی‌شده: ${scan.universeCount}\n" +
+                        "تعداد ارز تحلیل‌شده: ${scan.analyzedCount}",
+                    style =
+                        MaterialTheme.typography.bodyMedium
+                )
+            }
 
-                            verticalArrangement =
-                                Arrangement.spacedBy(10.dp)
-                        ) {
+            item {
 
-                            Text(
-                                "تحلیل ارز دلخواه",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .headlineSmall,
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
+                Text(
+                    text = "🔥 Top 10 کل بازار",
+                    style =
+                        MaterialTheme.typography.titleLarge
+                )
+            }
 
-                            Text(
-                                "هر جفت‌ارز USDT را وارد کن.",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall
-                            )
+            items(scan.top10All) { candidate ->
 
-                            OutlinedTextField(
+                CandidateCard(
+                    candidate = candidate
+                )
+            }
 
-                                value = customSymbol,
+            item {
 
-                                onValueChange = {
-                                    customSymbol =
-                                        it.uppercase(Locale.US)
-                                },
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
 
-                                modifier =
-                                    Modifier.fillMaxWidth(),
+                Text(
+                    text = "🏆 Top 10 در بین رتبه‌های 1 تا 100",
+                    style =
+                        MaterialTheme.typography.titleLarge
+                )
+            }
 
-                                singleLine = true,
+            items(scan.top10Top100) { candidate ->
 
-                                label = {
-                                    Text("Symbol")
-                                },
+                CandidateCard(
+                    candidate = candidate
+                )
+            }
+        }
 
-                                placeholder = {
-                                    Text("BTCUSDT")
-                                }
-                            )
+        item {
 
-                            Button(
+            Text(
+                text =
+                    "هشدار: تحلیل‌ها تخمینی و آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                style =
+                    MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
 
-                                onClick = {
-                                    refresh(customSymbol)
-                                },
+@Composable
+private fun FinalResultCard(
+    result: AnalysisResult
+) {
 
-                                enabled =
-                                    !loading &&
-                                            customSymbol.isNotBlank(),
+    val signal =
+        finalSignal(result)
 
-                                modifier =
-                                    Modifier.fillMaxWidth(),
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
 
-                                shape =
-                                    RoundedCornerShape(12.dp)
-                            ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
 
-                                Text(
-                                    if (loading)
-                                        "در حال تحلیل..."
-                                    else
-                                        "تحلیل این ارز"
-                                )
-                            }
-                        }
-                    }
-                }
+            Text(
+                text = "نتیجه نهایی تحلیل",
+                style =
+                    MaterialTheme.typography.titleLarge
+            )
 
+            Text(
+                text = signal,
+                style =
+                    MaterialTheme.typography.headlineMedium
+            )
 
-                // --------------------------------------------------
-                // QUICK COINS
-                // --------------------------------------------------
+            Text(
+                text =
+                    "Score: ${result.score}/100"
+            )
 
-                item {
+            Text(
+                text =
+                    "Confidence: ${result.confidence}%"
+            )
 
-                    SectionTitle("ارزهای سریع")
+            Text(
+                text =
+                    "Pump Probability: ${result.pump}%"
+            )
 
-                    Spacer(
-                        modifier =
-                            Modifier.height(6.dp)
-                    )
+            Text(
+                text =
+                    "Dump Probability: ${result.dump}%"
+            )
 
-                    Row(
+            Text(
+                text =
+                    "Money Flow: ${result.moneyFlow}/100"
+            )
 
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(
-                                    rememberScrollState()
-                                ),
+            Text(
+                text =
+                    "News Score: ${result.news}/100"
+            )
 
-                        horizontalArrangement =
-                            Arrangement.spacedBy(6.dp)
-                    ) {
+            Text(
+                text =
+                    "Trend Score: ${result.trend}/100"
+            )
 
-                        presetCoins.forEach { coin ->
+            if (result.reasons.isNotEmpty()) {
 
-                            FilterChip(
+                Divider()
 
-                                selected =
-                                    coin == selected,
+                Text(
+                    text = "دلایل اصلی",
+                    style =
+                        MaterialTheme.typography.titleMedium
+                )
 
-                                onClick = {
-
-                                    customSymbol = ""
-
-                                    refresh(coin)
-                                },
-
-                                label = {
-                                    Text(
-                                        coin.removeSuffix(
-                                            "USDT"
-                                        )
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // ACTION BUTTONS
-                // --------------------------------------------------
-
-                item {
-
-                    Row(
-
-                        modifier =
-                            Modifier.fillMaxWidth(),
-
-                        horizontalArrangement =
-                            Arrangement.spacedBy(8.dp)
-                    ) {
-
-                        Button(
-
-                            onClick = {
-                                refresh(selected)
-                            },
-
-                            enabled = !loading,
-
-                            modifier =
-                                Modifier.weight(1f)
-                        ) {
-
-                            Text(
-                                if (loading)
-                                    "Loading..."
-                                else
-                                    "Refresh"
-                            )
-                        }
-
-                        OutlinedButton(
-
-                            onClick = {
-                                scanMarket()
-                            },
-
-                            enabled = !scanLoading,
-
-                            modifier =
-                                Modifier.weight(1f)
-                        ) {
-
-                            Text(
-                                if (scanLoading)
-                                    "Scanning..."
-                                else
-                                    "Scanner"
-                            )
-                        }
-                    }
-                }
-
-
-                item {
+                result.reasons.take(8).forEach {
 
                     Text(
-                        "تایم‌فریم‌ها: 1D • 2D • 3D • 4D • 1W • 1M • 3M • 6M",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
+                        text = "• $it"
                     )
-                }
-
-
-                // --------------------------------------------------
-                // ERROR
-                // --------------------------------------------------
-
-                error?.let { msg ->
-
-                    item {
-
-                        Card(
-
-                            colors =
-                                CardDefaults.cardColors(
-                                    containerColor =
-                                        MaterialTheme
-                                            .colorScheme
-                                            .errorContainer
-                                )
-                        ) {
-
-                            Text(
-                                "خطا: $msg",
-
-                                modifier =
-                                    Modifier.padding(12.dp),
-
-                                color =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .onErrorContainer
-                            )
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // MAIN RESULT
-                // --------------------------------------------------
-
-                result?.let { r ->
-
-
-                    item {
-
-                        ScoreCard(
-                            symbol = selected,
-                            result = r
-                        )
-                    }
-
-
-                    item {
-
-                        SectionTitle(
-                            "شاخص‌های اصلی"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Row(
-
-                            modifier =
-                                Modifier.fillMaxWidth(),
-
-                            horizontalArrangement =
-                                Arrangement.spacedBy(8.dp)
-                        ) {
-
-                            MetricCard(
-                                "Money Flow",
-                                r.moneyFlow,
-                                Modifier.weight(1f)
-                            )
-
-                            MetricCard(
-                                "Trend",
-                                r.trend,
-                                Modifier.weight(1f)
-                            )
-
-                            MetricCard(
-                                "News",
-                                r.news,
-                                Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-
-                    // --------------------------------------------------
-                    // MARKET STATUS
-                    // --------------------------------------------------
-
-                    item {
-
-                        SectionTitle(
-                            "وضعیت بازار"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
-                            ) {
-
-                                InfoRow(
-                                    "Money Flow",
-                                    r.moneyFlowDetails.label
-                                )
-
-                                InfoRow(
-                                    "Flow Confidence",
-                                    "${r.moneyFlowDetails.confidence}%"
-                                )
-
-                                InfoRow(
-                                    "Structure",
-                                    r.structure.label
-                                )
-
-                                InfoRow(
-                                    "Support",
-                                    r.structure.support.formatPrice()
-                                )
-
-                                InfoRow(
-                                    "Resistance",
-                                    r.structure.resistance.formatPrice()
-                                )
-
-                                InfoRow(
-                                    "Divergence",
-                                    r.divergence.label
-                                )
-
-                                InfoRow(
-                                    "BTC Regime",
-                                    r.btcRegime.label
-                                )
-                            }
-                        }
-                    }
-
-
-                    // --------------------------------------------------
-                    // TIMEFRAME SCORES
-                    // --------------------------------------------------
-
-                    item {
-
-                        SectionTitle(
-                            "امتیاز تایم‌فریم‌ها"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-                                modifier =
-                                    Modifier.padding(12.dp)
-                            ) {
-
-                                r.timeframeScores
-                                    .forEach { (key, value) ->
-
-                                        TimeframeRow(
-                                            key,
-                                            value
-                                        )
-                                    }
-                            }
-                        }
-                    }
-
-
-                    // --------------------------------------------------
-                    // MONEY FLOW SUMMARY
-                    // --------------------------------------------------
-
-                    item {
-
-                        SectionTitle(
-                            "Money Flow"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(7.dp)
-                            ) {
-
-                                Text(
-                                    r.moneyFlowDetails.label,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .titleLarge,
-                                    fontWeight =
-                                        FontWeight.Bold
-                                )
-
-                                InfoRow(
-                                    "Score",
-                                    "${r.moneyFlowDetails.score}/100"
-                                )
-
-                                InfoRow(
-                                    "Confidence",
-                                    "${r.moneyFlowDetails.confidence}%"
-                                )
-
-                                HorizontalDivider()
-
-                                r.moneyFlowDetails
-                                    .reasons
-                                    .forEach { reason ->
-
-                                        Text(
-                                            "• $reason",
-                                            style =
-                                                MaterialTheme
-                                                    .typography
-                                                    .bodySmall
-                                        )
-                                    }
-                            }
-                        }
-                    }
-
-
-                    // --------------------------------------------------
-                    // MONEY FLOW TABLE
-                    // --------------------------------------------------
-
-                    item {
-
-                        SectionTitle(
-                            "جدول ورود و خروج پول"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(4.dp)
-                        )
-
-                        Text(
-                            "برآورد جریان سرمایه در بازه‌های مختلف",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall
-                        )
-                    }
-
-
-                    item {
-
-                        MoneyFlowTable(
-                            result = r.moneyFlowDetails
-                        )
-                    }
-
-
-                    // --------------------------------------------------
-                    // TRADE PLAN
-                    // --------------------------------------------------
-
-                    r.tradePlan?.let { p ->
-
-                        item {
-
-                            SectionTitle(
-                                "Trade Plan"
-                            )
-
-                            Spacer(
-                                modifier =
-                                    Modifier.height(6.dp)
-                            )
-
-                            Card {
-
-                                Column(
-
-                                    modifier =
-                                        Modifier.padding(14.dp),
-
-                                    verticalArrangement =
-                                        Arrangement.spacedBy(7.dp)
-                                ) {
-
-                                    InfoRow(
-                                        "Entry",
-                                        "${p.entryLow.formatPrice()} - ${p.entryHigh.formatPrice()}"
-                                    )
-
-                                    InfoRow(
-                                        "Stop Loss",
-                                        p.stopLoss.formatPrice()
-                                    )
-
-                                    InfoRow(
-                                        "TP1",
-                                        p.tp1.formatPrice()
-                                    )
-
-                                    InfoRow(
-                                        "TP2",
-                                        p.tp2.formatPrice()
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-
-                    // --------------------------------------------------
-                    // GENERAL REASONS
-                    // --------------------------------------------------
-
-                    item {
-
-                        SectionTitle(
-                            "دلایل کلی تحلیل"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(5.dp)
-                            ) {
-
-                                r.reasons.forEach { reason ->
-
-                                    Text(
-                                        "• $reason",
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .bodySmall
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // SCANNER
-                // --------------------------------------------------
-
-                if (scanResults.isNotEmpty()) {
-
-                    item {
-
-                        SectionTitle(
-                            "نتایج Scanner"
-                        )
-
-                        Text(
-                            "بهترین کاندیداهای فعلی بازار",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall
-                        )
-                    }
-
-
-                    items(
-                        scanResults.take(10)
-                    ) { x ->
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(12.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(5.dp)
-                            ) {
-
-                                Text(
-                                    x.symbol.removeSuffix(
-                                        "USDT"
-                                    ),
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .titleMedium,
-                                    fontWeight =
-                                        FontWeight.Bold
-                                )
-
-                                Text(
-                                    "Pump ${x.result.pump}%  •  " +
-                                            "Dump ${x.result.dump}%"
-                                )
-
-                                Text(
-                                    "Score ${x.result.score}/100  •  " +
-                                            "Confidence ${x.result.confidence}%"
-                                )
-
-                                Text(
-                                    "${x.result.signal}  •  " +
-                                            x.result.structure.label +
-                                            "  •  " +
-                                            x.flowLabel
-                                )
-                            }
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // BACKTEST / OPTIMIZE
-                // --------------------------------------------------
-
-                item {
-
-                    Row(
-
-                        modifier =
-                            Modifier.fillMaxWidth(),
-
-                        horizontalArrangement =
-                            Arrangement.spacedBy(8.dp)
-                    ) {
-
-                        OutlinedButton(
-
-                            onClick = {
-                                runBacktest()
-                            },
-
-                            enabled =
-                                !backtestLoading,
-
-                            modifier =
-                                Modifier.weight(1f)
-                        ) {
-
-                            Text(
-                                if (backtestLoading)
-                                    "Backtest..."
-                                else
-                                    "Backtest"
-                            )
-                        }
-
-
-                        OutlinedButton(
-
-                            onClick = {
-                                runOptimization()
-                            },
-
-                            enabled =
-                                !optimizeLoading,
-
-                            modifier =
-                                Modifier.weight(1f)
-                        ) {
-
-                            Text(
-                                if (optimizeLoading)
-                                    "Optimizing..."
-                                else
-                                    "Optimize"
-                            )
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // BACKTEST RESULT
-                // --------------------------------------------------
-
-                backtest?.let { b ->
-
-                    item {
-
-                        SectionTitle(
-                            "نتیجه Backtest"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(6.dp)
-                            ) {
-
-                                InfoRow(
-                                    "Samples",
-                                    b.samples.toString()
-                                )
-
-                                InfoRow(
-                                    "Signals",
-                                    b.evaluatedSignals.toString()
-                                )
-
-                                InfoRow(
-                                    "BUY",
-                                    b.buySignals.toString()
-                                )
-
-                                InfoRow(
-                                    "SELL",
-                                    b.sellSignals.toString()
-                                )
-
-                                InfoRow(
-                                    "Hit Rate",
-                                    "%.1f%%".format(
-                                        b.hitRate * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Avg Return",
-                                    "%.2f%%".format(
-                                        b.avgReturn * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Max Drawdown",
-                                    "%.2f%%".format(
-                                        b.maxDrawdown * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Brier Score",
-                                    "%.4f".format(
-                                        b.brierScore
-                                    )
-                                )
-
-                                HorizontalDivider()
-
-                                b.horizons.forEach { h ->
-
-                                    Text(
-                                        "${h.horizon}D  •  " +
-                                                "Signals ${h.signals}  •  " +
-                                                "Hit ${"%.1f".format(h.hitRate * 100)}%  •  " +
-                                                "Net ${"%.2f".format(h.avgReturn * 100)}%  •  " +
-                                                "DD ${"%.2f".format(h.maxDrawdown * 100)}%  •  " +
-                                                "Brier ${"%.3f".format(h.brierScore)}",
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .bodySmall
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // OPTIMIZATION
-                // --------------------------------------------------
-
-                optimization?.let { o ->
-
-                    item {
-
-                        SectionTitle(
-                            "Auto Learning"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(6.dp)
-                            ) {
-
-                                InfoRow(
-                                    "Baseline",
-                                    "%.4f".format(
-                                        o.baselineScore
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Optimized",
-                                    "%.4f".format(
-                                        o.optimizedScore
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Holdout Hit Rate",
-                                    "%.1f%%".format(
-                                        o.holdoutHitRate * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Holdout Return",
-                                    "%.2f%%".format(
-                                        o.holdoutReturn * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Brier",
-                                    "%.4f".format(
-                                        o.holdoutBrier
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Drawdown",
-                                    "%.2f%%".format(
-                                        o.holdoutDrawdown * 100
-                                    )
-                                )
-
-                                InfoRow(
-                                    "Status",
-                                    if (o.accepted)
-                                        "ACCEPTED"
-                                    else
-                                        "REJECTED"
-                                )
-
-                                HorizontalDivider()
-
-                                Text(
-                                    "Tech ${"%.0f".format(o.optimized.technical * 100)}%  •  " +
-                                            "Flow ${"%.0f".format(o.optimized.moneyFlow * 100)}%  •  " +
-                                            "TF ${"%.0f".format(o.optimized.timeframe * 100)}%  •  " +
-                                            "Structure ${"%.0f".format(o.optimized.structure * 100)}%  •  " +
-                                            "Div ${"%.0f".format(o.optimized.divergence * 100)}%  •  " +
-                                            "News ${"%.0f".format(o.optimized.news * 100)}%  •  " +
-                                            "BTC ${"%.0f".format(o.optimized.btc * 100)}%",
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-
-                                Text(
-                                    "Learning Status: $learningStatus",
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-
-                                Text(
-                                    o.note,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-                            }
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // NEWS
-                // --------------------------------------------------
-
-                news?.let { ns ->
-
-                    item {
-
-                        SectionTitle(
-                            "اخبار معتبر"
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.height(6.dp)
-                        )
-
-                        Card {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(14.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(6.dp)
-                            ) {
-
-                                InfoRow(
-                                    "News Score",
-                                    "${ns.score}/100"
-                                )
-
-                                InfoRow(
-                                    "Confidence",
-                                    "${ns.confidence}%"
-                                )
-
-                                InfoRow(
-                                    "Bullish",
-                                    ns.bullishCount.toString()
-                                )
-
-                                InfoRow(
-                                    "Bearish",
-                                    ns.bearishCount.toString()
-                                )
-
-                                InfoRow(
-                                    "Market Moving",
-                                    ns.marketMovingCount.toString()
-                                )
-                            }
-                        }
-                    }
-
-
-                    items(
-                        ns.items.take(10)
-                    ) { n ->
-
-                        Card(
-
-                            onClick = {
-
-                                if (n.link.isNotBlank()) {
-
-                                    runCatching {
-
-                                        context.startActivity(
-
-                                            Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse(n.link)
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        ) {
-
-                            Column(
-
-                                modifier =
-                                    Modifier.padding(12.dp),
-
-                                verticalArrangement =
-                                    Arrangement.spacedBy(5.dp)
-                            ) {
-
-                                Text(
-                                    n.source,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .labelMedium
-                                )
-
-                                Text(
-                                    n.title,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .titleMedium
-                                )
-
-                                Text(
-                                    "${n.category} • " +
-                                            "Sentiment ${n.sentiment} • " +
-                                            "Impact ${n.impact}/5",
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-
-                                Text(
-                                    "Credibility ${n.credibility}% • " +
-                                            "Relevance ${n.relevance}%",
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-                            }
-                        }
-                    }
-                }
-
-
-                // --------------------------------------------------
-                // FOOTER
-                // --------------------------------------------------
-
-                item {
-
-                    Card {
-
-                        Column(
-
-                            modifier =
-                                Modifier.padding(14.dp),
-
-                            verticalArrangement =
-                                Arrangement.spacedBy(5.dp)
-                        ) {
-
-                            Text(
-                                "CryptoPulse",
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
-
-                            Text(
-                                "Pump/Dump احتمال آماری است و تضمین سود نیست.",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall
-                            )
-
-                            Text(
-                                "Money Flow نیز برآورد جریان سرمایه از داده‌های بازار است و معادل ورود و خروج واقعی کیف‌پول‌ها نیست.",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall
-                            )
-                        }
-                    }
                 }
             }
         }
     }
 }
 
-
-// ================================================================
-// SCORE CARD
-// ================================================================
-
 @Composable
-private fun ScoreCard(
-    symbol: String,
+private fun AnalysisSummaryCard(
     result: AnalysisResult
 ) {
 
-    val signalColor = when (result.signal) {
-
-        "BUY" ->
-            Color(0xFF00C853)
-
-        "SELL" ->
-            Color(0xFFFF5252)
-
-        else ->
-            Color(0xFFFFB300)
-    }
-
     Card(
-        shape =
-            RoundedCornerShape(22.dp)
+        modifier = Modifier.fillMaxWidth()
     ) {
 
         Column(
-
-            modifier =
-                Modifier.padding(18.dp),
-
+            modifier = Modifier.padding(16.dp),
             verticalArrangement =
-                Arrangement.spacedBy(9.dp)
+                Arrangement.spacedBy(6.dp)
         ) {
 
-            Row(
+            Text(
+                text = "جزئیات تحلیل",
+                style =
+                    MaterialTheme.typography.titleLarge
+            )
 
-                modifier =
-                    Modifier.fillMaxWidth(),
+            Text(
+                text =
+                    "Structure: ${result.structure.label}"
+            )
 
-                horizontalArrangement =
-                    Arrangement.SpaceBetween,
+            Text(
+                text =
+                    "Divergence: ${result.divergence.label}"
+            )
 
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
+            Text(
+                text =
+                    "BTC Regime: ${result.btcRegime.label}"
+            )
 
-                Column {
+            Text(
+                text =
+                    "News Confidence: ${result.news}/100"
+            )
+
+            if (result.timeframeScores.isNotEmpty()) {
+
+                Divider()
+
+                Text(
+                    text = "امتیاز تایم‌فریم‌ها",
+                    style =
+                        MaterialTheme.typography.titleMedium
+                )
+
+                result.timeframeScores
+                    .forEach { (frame, score) ->
+
+                        Text(
+                            text =
+                                "$frame : $score"
+                        )
+                    }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoneyFlowCard(
+    result: AnalysisResult
+) {
+
+    val flow =
+        result.moneyFlowDetails
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(7.dp)
+        ) {
+
+            Text(
+                text = "Money Flow",
+                style =
+                    MaterialTheme.typography.titleLarge
+            )
+
+            Text(
+                text =
+                    "وضعیت: ${flow.label}"
+            )
+
+            Text(
+                text =
+                    "Score: ${flow.score}/100"
+            )
+
+            Text(
+                text =
+                    "Confidence: ${flow.confidence}%"
+            )
+
+            if (flow.reasons.isNotEmpty()) {
+
+                flow.reasons.take(8).forEach {
 
                     Text(
-                        symbol,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .headlineSmall,
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Text(
-                        "Full Market Analysis",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-                }
-
-
-                Surface(
-
-                    color = signalColor,
-
-                    shape =
-                        RoundedCornerShape(12.dp)
-                ) {
-
-                    Text(
-
-                        result.signal,
-
-                        modifier =
-                            Modifier.padding(
-                                horizontal = 14.dp,
-                                vertical = 8.dp
-                            ),
-
-                        fontWeight =
-                            FontWeight.Bold,
-
-                        color = Color.White
+                        text = "• $it"
                     )
                 }
             }
 
+            if (flow.periods.isNotEmpty()) {
 
-            HorizontalDivider()
+                Divider()
 
+                Text(
+                    text = "بررسی جریان پول در تایم‌فریم‌ها",
+                    style =
+                        MaterialTheme.typography.titleMedium
+                )
+
+                flow.periods
+                    .forEach { (_, period) ->
+
+                        Text(
+                            text =
+                                "${period.title}: ${period.status}"
+                        )
+
+                        Text(
+                            text =
+                                "ورود: ${formatMoney(period.inflowUsd)} | " +
+                                "خروج: ${formatMoney(period.outflowUsd)}"
+                        )
+
+                        Text(
+                            text =
+                                "Net: ${formatMoney(period.netFlowUsd)}"
+                        )
+                    }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TradePlanCard(
+    result: AnalysisResult
+) {
+
+    val plan =
+        result.tradePlan ?: return
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(6.dp)
+        ) {
 
             Text(
-                "Score ${result.score}/100",
+                text = "Trade Plan",
                 style =
-                    MaterialTheme
-                        .typography
-                        .headlineMedium,
-                fontWeight =
-                    FontWeight.Bold
+                    MaterialTheme.typography.titleLarge
             )
 
-
-            LinearProgressIndicator(
-
-                progress = {
-                    result.score
-                        .coerceIn(0, 100) / 100f
-                },
-
-                modifier =
-                    Modifier.fillMaxWidth()
+            Text(
+                text =
+                    "Entry: ${formatPrice(plan.entryLow)} - " +
+                    formatPrice(plan.entryHigh)
             )
 
+            Text(
+                text =
+                    "Stop Loss: ${formatPrice(plan.stopLoss)}"
+            )
+
+            Text(
+                text =
+                    "TP1: ${formatPrice(plan.tp1)}"
+            )
+
+            Text(
+                text =
+                    "TP2: ${formatPrice(plan.tp2)}"
+            )
+
+            Text(
+                text =
+                    "Risk / Reward: ${"%.2f".format(plan.riskReward)}"
+            )
+        }
+    }
+}
+
+@Composable
+private fun CandidateCard(
+    candidate: ScanCandidate
+) {
+
+    val result =
+        candidate.result
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(5.dp)
+        ) {
 
             Row(
-
-                modifier =
-                    Modifier.fillMaxWidth(),
-
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement =
                     Arrangement.SpaceBetween
             ) {
 
                 Text(
-                    "Pump ${result.pump}%"
+                    text =
+                        candidate.symbol,
+                    style =
+                        MaterialTheme.typography.titleLarge
                 )
 
                 Text(
-                    "Dump ${result.dump}%"
+                    text =
+                        finalSignal(result),
+                    style =
+                        MaterialTheme.typography.titleMedium
+                )
+            }
+
+            Text(
+                text =
+                    "Score: ${result.score}/100"
+            )
+
+            Text(
+                text =
+                    "Confidence: ${result.confidence}%"
+            )
+
+            Text(
+                text =
+                    "Pump: ${result.pump}% | Dump: ${result.dump}%"
+            )
+
+            Text(
+                text =
+                    "Money Flow: ${result.moneyFlowDetails.label}"
+            )
+
+            Text(
+                text =
+                    "News: ${result.news}/100"
+            )
+
+            Text(
+                text =
+                    "Structure: ${result.structure.label}"
+            )
+
+            result.tradePlan?.let { plan ->
+
+                Text(
+                    text =
+                        "Entry: ${formatPrice(plan.entryLow)} - " +
+                        formatPrice(plan.entryHigh)"
                 )
 
                 Text(
-                    "Confidence ${result.confidence}%"
+                    text =
+                        "SL: ${formatPrice(plan.stopLoss)} | " +
+                        "TP1: ${formatPrice(plan.tp1)} | " +
+                        "TP2: ${formatPrice(plan.tp2)}"
+                )
+            }
+
+            if (result.reasons.isNotEmpty()) {
+
+                Text(
+                    text =
+                        "• ${result.reasons.first()}"
                 )
             }
         }
     }
 }
 
+private fun finalSignal(
+    result: AnalysisResult
+): String {
 
-// ================================================================
-// METRIC CARD
-// ================================================================
+    val score =
+        result.score.coerceIn(0, 100)
 
-@Composable
-private fun MetricCard(
-    title: String,
-    value: Int,
-    modifier: Modifier
-) {
+    val confidence =
+        result.confidence.coerceIn(0, 100)
 
-    Card(
-        modifier = modifier
-    ) {
+    val pump =
+        result.pump.coerceIn(0, 100)
 
-        Column(
-            modifier =
-                Modifier.padding(12.dp)
-        ) {
+    val dump =
+        result.dump.coerceIn(0, 100)
 
-            Text(
-                title,
-                style =
-                    MaterialTheme
-                        .typography
-                        .labelMedium
-            )
-
-            Text(
-                value.toString(),
-                style =
-                    MaterialTheme
-                        .typography
-                        .headlineSmall,
-                fontWeight =
-                    FontWeight.Bold
-            )
-        }
-    }
-}
-
-
-// ================================================================
-// TIMEFRAME
-// ================================================================
-
-@Composable
-private fun TimeframeRow(
-    key: String,
-    value: Int
-) {
-
-    Row(
-
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(vertical = 5.dp),
-
-        horizontalArrangement =
-            Arrangement.SpaceBetween,
-
-        verticalAlignment =
-            Alignment.CenterVertically
-    ) {
-
-        Text(
-            key,
-            fontWeight =
-                FontWeight.Bold
+    val heavyInflow =
+        isHeavyInflow(
+            result.moneyFlowDetails.label
         )
 
+    val heavyOutflow =
+        isHeavyOutflow(
+            result.moneyFlowDetails.label
+        )
 
-        Row(
-            verticalAlignment =
-                Alignment.CenterVertically
-        ) {
-
-            Text(
-                "$value/100"
-            )
-
-            Spacer(
-                modifier =
-                    Modifier.width(10.dp)
-            )
-
-            LinearProgressIndicator(
-
-                progress = {
-                    value
-                        .coerceIn(0, 100) / 100f
-                },
-
-                modifier =
-                    Modifier.width(100.dp)
-            )
-        }
+    /**
+     * STRONG BUY
+     *
+     * باید چند شرط هم‌زمان وجود داشته باشد:
+     * - Score بالا
+     * - Confidence بالا
+     * - Pump بالا
+     * - Money Flow قوی
+     * - خبر منفی شدید مانع نباشد
+     */
+    if (
+        score >= 82 &&
+        confidence >= 75 &&
+        pump >= 75 &&
+        heavyInflow &&
+        result.news >= 45 &&
+        !heavyOutflow
+    ) {
+        return "🟢 STRONG BUY"
     }
+
+    /**
+     * STRONG SELL
+     */
+    if (
+        score <= 25 &&
+        confidence >= 75 &&
+        dump >= 75 &&
+        heavyOutflow &&
+        result.news <= 55 &&
+        !heavyInflow
+    ) {
+        return "🔴 STRONG SELL"
+    }
+
+    if (
+        score >= 70 &&
+        confidence >= 60 &&
+        pump >= 65 &&
+        !heavyOutflow
+    ) {
+        return "🟢 BUY"
+    }
+
+    if (
+        score <= 35 &&
+        confidence >= 60 &&
+        dump >= 65 &&
+        !heavyInflow
+    ) {
+        return "🔴 SELL"
+    }
+
+    return "🟡 HOLD / WAIT"
 }
 
+private fun isHeavyInflow(
+    label: String
+): Boolean {
 
-// ================================================================
-// INFO ROW
-// ================================================================
+    val normalized =
+        label.uppercase(Locale.US)
 
-@Composable
-private fun InfoRow(
-    title: String,
+    return normalized.contains("HEAVY INFLOW") ||
+        label.contains("ورود سنگین") ||
+        label.contains("ورود غیرعادی")
+}
+
+private fun isHeavyOutflow(
+    label: String
+): Boolean {
+
+    val normalized =
+        label.uppercase(Locale.US)
+
+    return normalized.contains("HEAVY OUTFLOW") ||
+        label.contains("خروج سنگین") ||
+        label.contains("خروج غیرعادی")
+}
+
+private fun normalizeSymbol(
     value: String
-) {
+): String {
 
-    Row(
+    var s =
+        value
+            .trim()
+            .uppercase(Locale.US)
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
 
-        modifier =
-            Modifier.fillMaxWidth(),
-
-        horizontalArrangement =
-            Arrangement.SpaceBetween,
-
-        verticalAlignment =
-            Alignment.CenterVertically
-    ) {
-
-        Text(
-            title,
-            style =
-                MaterialTheme
-                    .typography
-                    .bodySmall
-        )
-
-        Text(
-            value,
-            fontWeight =
-                FontWeight.Bold
-        )
+    if (s.isBlank()) {
+        s = "BTCUSDT"
     }
-}
 
-
-// ================================================================
-// SECTION TITLE
-// ================================================================
-
-@Composable
-private fun SectionTitle(
-    title: String
-) {
-
-    Text(
-        title,
-        style =
-            MaterialTheme
-                .typography
-                .titleLarge,
-        fontWeight =
-            FontWeight.Bold
-    )
-}
-
-
-// ================================================================
-// MONEY FLOW TABLE
-// ================================================================
-
-@Composable
-private fun MoneyFlowTable(
-    result: MoneyFlowResult
-) {
-
-    val periods = listOf(
-        "1D",
-        "2D",
-        "3D",
-        "4D",
-        "1W",
-        "1M",
-        "3M",
-        "6M"
-    )
-
-    Card(
-        shape =
-            RoundedCornerShape(18.dp)
-    ) {
-
-        Column(
-            modifier =
-                Modifier.padding(8.dp)
-        ) {
-
-            Row(
-
-                modifier =
-                    Modifier.horizontalScroll(
-                        rememberScrollState()
-                    )
-            ) {
-
-                Column {
-
-                    // HEADER
-                    Row(
-
-                        modifier =
-                            Modifier
-                                .width(1000.dp)
-                                .background(
-                                    MaterialTheme
-                                        .colorScheme
-                                        .surfaceVariant,
-                                    RoundedCornerShape(10.dp)
-                                )
-                                .padding(
-                                    horizontal = 6.dp,
-                                    vertical = 10.dp
-                                ),
-
-                        horizontalArrangement =
-                            Arrangement.spacedBy(4.dp)
-                    ) {
-
-                        MoneyFlowCell(
-                            "بازه",
-                            70.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "ورود",
-                            125.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "خروج",
-                            125.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "خالص",
-                            125.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "تغییر خالص",
-                            105.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "ورود غیرعادی",
-                            120.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "خروج غیرعادی",
-                            120.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "اطمینان",
-                            90.dp,
-                            true
-                        )
-
-                        MoneyFlowCell(
-                            "وضعیت",
-                            150.dp,
-                            true
-                        )
-                    }
-
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(4.dp)
-                    )
-
-
-                    periods.forEach { key ->
-
-                        val p =
-                            result.periods[key]
-
-                        if (p != null) {
-
-                            val statusColor =
-                                when {
-
-                                    p.unusualInflow >= 70 ->
-                                        Color(0xFF00C853)
-
-                                    p.unusualOutflow >= 70 ->
-                                        Color(0xFFFF5252)
-
-                                    p.netFlowUsd > 0 ->
-                                        Color(0xFF69F0AE)
-
-                                    p.netFlowUsd < 0 ->
-                                        Color(0xFFFF8A80)
-
-                                    else ->
-                                        MaterialTheme
-                                            .colorScheme
-                                            .onSurface
-                                }
-
-
-                            Row(
-
-                                modifier =
-                                    Modifier
-                                        .width(1000.dp)
-                                        .padding(
-                                            horizontal = 6.dp,
-                                            vertical = 9.dp
-                                        ),
-
-                                horizontalArrangement =
-                                    Arrangement.spacedBy(4.dp),
-
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-
-                                MoneyFlowCell(
-                                    p.title.ifBlank {
-                                        p.key
-                                    },
-                                    70.dp,
-                                    true
-                                )
-
-
-                                MoneyFlowCell(
-                                    formatFlowMoney(
-                                        p.inflowUsd
-                                    ),
-                                    125.dp
-                                )
-
-
-                                MoneyFlowCell(
-                                    formatFlowMoney(
-                                        p.outflowUsd
-                                    ),
-                                    125.dp
-                                )
-
-
-                                MoneyFlowCell(
-                                    formatFlowMoney(
-                                        p.netFlowUsd
-                                    ),
-                                    125.dp,
-                                    valueColor =
-                                        statusColor
-                                )
-
-
-                                MoneyFlowCell(
-                                    formatPercent(
-                                        p.netChangePct
-                                    ),
-                                    105.dp,
-                                    valueColor =
-                                        statusColor
-                                )
-
-
-                                MoneyFlowCell(
-                                    "${p.unusualInflow}%",
-                                    120.dp,
-                                    valueColor =
-                                        if (
-                                            p.unusualInflow >= 70
-                                        ) {
-                                            Color(0xFF00C853)
-                                        } else {
-                                            MaterialTheme
-                                                .colorScheme
-                                                .onSurface
-                                        }
-                                )
-
-
-                                MoneyFlowCell(
-                                    "${p.unusualOutflow}%",
-                                    120.dp,
-                                    valueColor =
-                                        if (
-                                            p.unusualOutflow >= 70
-                                        ) {
-                                            Color(0xFFFF5252)
-                                        } else {
-                                            MaterialTheme
-                                                .colorScheme
-                                                .onSurface
-                                        }
-                                )
-
-
-                                MoneyFlowCell(
-                                    "${p.confidence}%",
-                                    90.dp
-                                )
-
-
-                                MoneyFlowCell(
-                                    p.status,
-                                    150.dp,
-                                    valueColor =
-                                        statusColor,
-                                    bold = true
-                                )
-                            }
-
-
-                            HorizontalDivider(
-                                modifier =
-                                    Modifier.width(1000.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
+    if (!s.endsWith("USDT")) {
+        s += "USDT"
     }
+
+    return s
 }
 
-
-// ================================================================
-// MONEY FLOW CELL
-// ================================================================
-
-@Composable
-private fun MoneyFlowCell(
-    text: String,
-    width: Dp,
-    bold: Boolean = false,
-    valueColor: Color =
-        MaterialTheme
-            .colorScheme
-            .onSurface
-) {
-
-    Box(
-
-        modifier =
-            Modifier.width(width),
-
-        contentAlignment =
-            Alignment.CenterStart
-    ) {
-
-        Text(
-
-            text = text,
-
-            color = valueColor,
-
-            fontWeight =
-                if (bold)
-                    FontWeight.Bold
-                else
-                    FontWeight.Normal,
-
-            style =
-                MaterialTheme
-                    .typography
-                    .bodySmall
-        )
-    }
-}
-
-
-// ================================================================
-// MONEY FORMAT
-// ================================================================
-
-private fun formatFlowMoney(
+private fun formatMoney(
     value: Double
 ): String {
 
-    val absolute =
+    val absValue =
         abs(value)
 
-    val sign =
-        if (value < 0)
-            "-"
-        else
-            ""
-
-
     return when {
 
-        absolute >= 1_000_000_000 ->
-
-            String.format(
+        absValue >= 1_000_000_000 ->
+            "$%.2fB".format(
                 Locale.US,
-                "%s$%.2fB",
-                sign,
-                absolute / 1_000_000_000
+                value / 1_000_000_000.0
             )
 
-
-        absolute >= 1_000_000 ->
-
-            String.format(
+        absValue >= 1_000_000 ->
+            "$%.2fM".format(
                 Locale.US,
-                "%s$%.2fM",
-                sign,
-                absolute / 1_000_000
+                value / 1_000_000.0
             )
 
-
-        absolute >= 1_000 ->
-
-            String.format(
+        absValue >= 1_000 ->
+            "$%.2fK".format(
                 Locale.US,
-                "%s$%.2fK",
-                sign,
-                absolute / 1_000
+                value / 1_000.0
             )
-
 
         else ->
-
-            String.format(
+            "$%.2f".format(
                 Locale.US,
-                "%s$%.0f",
-                sign,
-                absolute
+                value
             )
     }
 }
 
-
-// ================================================================
-// PERCENT FORMAT
-// ================================================================
-
-private fun formatPercent(
+private fun formatPrice(
     value: Double
 ): String {
 
-    return String.format(
-        Locale.US,
-        "%+.1f%%",
-        value
-    )
-}
-
-
-// ================================================================
-// PRICE FORMAT
-// ================================================================
-
-private fun Double.formatPrice(): String {
-
     return when {
 
-        this >= 1000 ->
-
-            String.format(
+        value >= 1000 ->
+            "%.2f".format(
                 Locale.US,
-                "%.2f",
-                this
+                value
             )
 
-
-        this >= 1 ->
-
-            String.format(
+        value >= 1 ->
+            "%.4f".format(
                 Locale.US,
-                "%.4f",
-                this
+                value
             )
-
-
-        this >= 0.01 ->
-
-            String.format(
-                Locale.US,
-                "%.6f",
-                this
-            )
-
 
         else ->
-
-            String.format(
+            "%.8f".format(
                 Locale.US,
-                "%.8f",
-                this
+                value
             )
     }
 }
