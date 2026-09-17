@@ -10,6 +10,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import retrofit2.http.GET
+import okhttp3.ResponseBody
 
 data class MarketScanResult(
     val top10All: List<ScanCandidate>,
@@ -25,6 +27,12 @@ class MarketScanner {
         .addConverterFactory(MoshiConverterFactory.create())
         .build()
         .create(BinanceScannerApi::class.java)
+
+    private val exchange = Retrofit.Builder()
+        .baseUrl("https://api.binance.com/")
+        .addConverterFactory(MoshiConverterFactory.create())
+        .build()
+        .create(BinanceExchangeApi::class.java)
 
     private val market = Retrofit.Builder()
         .baseUrl("https://api.binance.com/")
@@ -53,6 +61,44 @@ class MarketScanner {
         enrichLimit: Int = 100
     ): MarketScanResult = withContext(Dispatchers.IO) {
 
+        /*
+         * ---------------------------------------------------------
+         * 1) دریافت لیست رسمی نمادهای قابل معامله Binance
+         * ---------------------------------------------------------
+         *
+         * فقط:
+         * - quoteAsset = USDT
+         * - status = TRADING
+         *
+         * بنابراین ارز خارج از Binance یا نماد متوقف‌شده
+         * وارد اسکن نمی‌شود.
+         */
+        val exchangeResponse = runCatching {
+            exchange.exchangeInfo()
+        }.getOrElse {
+            return@withContext emptyScanResult()
+        }
+
+        val exchangeRaw = runCatching {
+            exchangeResponse.string()
+        }.getOrDefault("")
+
+        if (exchangeRaw.isBlank()) {
+            return@withContext emptyScanResult()
+        }
+
+        val allowedSymbols =
+            parseTradableUsdtSymbols(exchangeRaw)
+
+        if (allowedSymbols.isEmpty()) {
+            return@withContext emptyScanResult()
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 2) دریافت حجم معاملات 24 ساعته Binance
+         * ---------------------------------------------------------
+         */
         val tickerResponse = runCatching {
             spot.ticker24h()
         }.getOrElse {
@@ -78,100 +124,82 @@ class MarketScanner {
             "USD1USDT"
         )
 
-        val symbols = mutableListOf<Pair<String, Double>>()
-
-        for (i in 0 until tickers.length()) {
-
-            val obj =
-                tickers.optJSONObject(i)
-                    ?: continue
-
-            val symbol =
-                normalizeSymbol(
-                    obj.optString("symbol")
-                )
-
-            if (symbol.isBlank()) continue
-            if (!symbol.endsWith("USDT")) continue
-            if (stableCoins.contains(symbol)) continue
-
-            val quoteVolume =
-                obj.optDouble(
-                    "quoteVolume",
-                    0.0
-                )
-
-            if (!quoteVolume.isFinite()) continue
-            if (quoteVolume <= 0.0) continue
-
-            symbols += symbol to quoteVolume
-        }
-
-        val universe =
-            symbols
-                .distinctBy { it.first }
-                .sortedByDescending { it.second }
-                .take(universeLimit)
+        /*
+         * فقط نمادهایی که هم:
+         *
+         * 1. در ExchangeInfo بایننس هستند
+         * 2. TRADING هستند
+         * 3. USDT هستند
+         * 4. در ticker24h وجود دارند
+         *
+         * وارد Universe می‌شوند.
+         */
+        val universe = buildUniverse(
+            tickers = tickers,
+            allowedSymbols = allowedSymbols,
+            stableCoins = stableCoins,
+            limit = universeLimit
+        )
 
         if (universe.isEmpty()) {
             return@withContext emptyScanResult()
         }
 
         /*
-         * مرحله اول:
-         * تحلیل تکنیکال سریع برای کل Universe
+         * ---------------------------------------------------------
+         * 3) تحلیل تکنیکال سریع روی کل Universe
+         * ---------------------------------------------------------
+         *
+         * این مرحله بدون News / OI / Funding انجام می‌شود
+         * تا زمان اسکن خیلی زیاد نشود.
          */
-        val technicalLimiter = Semaphore(8)
+        val technicalLimiter = Semaphore(10)
 
-        val technicalCandidates =
-            coroutineScope {
+        val technicalCandidates = coroutineScope {
+            universe.map { (symbol, quoteVolume) ->
+                async(Dispatchers.IO) {
+                    technicalLimiter.withPermit {
 
-                universe.map { (symbol, quoteVolume) ->
+                        runCatching {
 
-                    async(Dispatchers.IO) {
-
-                        technicalLimiter.withPermit {
-
-                            runCatching {
-
-                                val candlesRaw =
-                                    market.klines(
+                            val candlesRaw =
+                                market
+                                    .klines(
                                         symbol,
                                         "1d",
                                         180
-                                    ).string()
-
-                                val candles =
-                                    parseKlines(candlesRaw)
-
-                                if (candles.size < 60) {
-                                    return@runCatching null
-                                }
-
-                                val preliminary =
-                                    AnalysisEngine.analyze(
-                                        candles = candles,
-                                        flow = MarketFlowData(),
-                                        newsScore = 50,
-                                        newsConfidence = 0,
-                                        btcCandles = null
                                     )
+                                    .string()
 
-                                ScanCandidate(
-                                    symbol = symbol,
-                                    quoteVolume = quoteVolume,
-                                    result = preliminary
+                            val candles =
+                                parseKlines(candlesRaw)
+
+                            if (candles.size < 60) {
+                                return@runCatching null
+                            }
+
+                            val preliminary =
+                                AnalysisEngine.analyze(
+                                    candles = candles,
+                                    flow = MarketFlowData(),
+                                    newsScore = 50,
+                                    newsConfidence = 0,
+                                    btcCandles = null
                                 )
 
-                            }.getOrNull()
-                        }
+                            ScanCandidate(
+                                symbol = symbol,
+                                quoteVolume = quoteVolume,
+                                result = preliminary
+                            )
+
+                        }.getOrNull()
                     }
-                }.awaitAll()
-                    .filterNotNull()
-            }
+                }
+            }.awaitAll().filterNotNull()
+        }
 
         if (technicalCandidates.isEmpty()) {
-
             return@withContext MarketScanResult(
                 top10All = emptyList(),
                 top10Top100 = emptyList(),
@@ -181,7 +209,43 @@ class MarketScanner {
         }
 
         /*
-         * رتبه‌های 1 تا 100 بر اساس حجم معاملات بازار
+         * ---------------------------------------------------------
+         * 4) فیلتر سریع تکنیکال
+         * ---------------------------------------------------------
+         *
+         * ارزهای کاملاً ضعیف حذف می‌شوند.
+         * سپس فقط کاندیدهای مناسب وارد تحلیل سنگین می‌شوند.
+         */
+        val technicalShortlist =
+            technicalCandidates
+                .filter {
+                    isTechnicalCandidate(it.result)
+                }
+                .sortedWith(
+                    compareByDescending<ScanCandidate> {
+                        technicalPreScore(it.result)
+                    }.thenByDescending {
+                        it.quoteVolume
+                    }
+                )
+                .take(
+                    maxOf(
+                        120,
+                        technicalLimit.coerceAtLeast(100)
+                    )
+                )
+
+        if (technicalShortlist.isEmpty()) {
+            return@withContext MarketScanResult(
+                top10All = emptyList(),
+                top10Top100 = emptyList(),
+                analyzedCount = technicalCandidates.size,
+                universeCount = universe.size
+            )
+        }
+
+        /*
+         * 100 ارز اول Binance بر اساس حجم 24 ساعته.
          */
         val top100Symbols =
             universe
@@ -190,67 +254,31 @@ class MarketScanner {
                 .toSet()
 
         /*
-         * برای مرحله Enrichment، ارزهای قوی‌تر را انتخاب می‌کنیم.
+         * ---------------------------------------------------------
+         * 5) تحلیل کامل
+         * ---------------------------------------------------------
          *
-         * نکته:
-         * هنوز BUY/STRONG BUY نهایی نیست؛ چون برای تصمیم نهایی
-         * باید Money Flow + News + BTC Regime دریافت شود.
+         * فقط shortlist وارد این بخش می‌شود:
+         *
+         * - News
+         * - Money Flow
+         * - OI
+         * - Funding
+         * - Long / Short
+         * - Taker Volume
+         * - BTC Regime
+         * - Structure
+         * - Divergence
+         * - Confidence
+         * - Pump / Dump
+         * - Final Score
          */
-        val rankedTechnical =
-            technicalCandidates
-                .sortedWith(
-                    compareByDescending<ScanCandidate> {
-                        rankingScore(it)
-                    }.thenByDescending {
-                        it.quoteVolume
-                    }
-                )
+        val enrichLimiter = Semaphore(5)
 
-        val technicalTop100 =
-            rankedTechnical
-                .filter {
-                    top100Symbols.contains(it.symbol)
-                }
-                .take(100)
-
-        val technicalTopOverall =
-            rankedTechnical
-                .take(
-                    technicalLimit.coerceAtLeast(100)
-                )
-
-        /*
-         * برای اینکه ارزهای BUY بالقوه از کل بازار از دست نروند،
-         * مجموعه Enrichment نسبتاً بزرگ نگه داشته می‌شود.
-         */
-        val enrichCandidates =
-            (
-                technicalTop100 +
-                    technicalTopOverall
-                )
-                .distinctBy {
-                    it.symbol
-                }
-                .take(
-                    maxOf(
-                        enrichLimit,
-                        technicalTop100.size,
-                        technicalLimit.coerceAtMost(
-                            technicalCandidates.size
-                        )
-                    )
-                )
-
-        val enrichLimiter = Semaphore(6)
-
-        /*
-         * مرحله دوم:
-         * دریافت Money Flow + News + BTC Regime
-         */
         val enrichedCandidates =
             coroutineScope {
 
-                enrichCandidates.map { candidate ->
+                technicalShortlist.map { candidate ->
 
                     async(Dispatchers.IO) {
 
@@ -318,55 +346,41 @@ class MarketScanner {
                                             .label
                                 )
 
-                            }.getOrElse {
-                                candidate
-                            }
+                            }.getOrNull()
                         }
                     }
-                }.awaitAll()
+                }.awaitAll().filterNotNull()
             }
 
-        val enrichedMap =
-            enrichedCandidates.associateBy {
-                it.symbol
-            }
-
-        /*
-         * نتیجه نهایی:
-         * ارزهای Enrichment شده جایگزین نسخه تکنیکال اولیه می‌شوند.
-         */
-        val finalCandidates =
-            technicalCandidates.map { candidate ->
-                enrichedMap[candidate.symbol]
-                    ?: candidate
-            }
+        if (enrichedCandidates.isEmpty()) {
+            return@withContext MarketScanResult(
+                top10All = emptyList(),
+                top10Top100 = emptyList(),
+                analyzedCount = technicalCandidates.size,
+                universeCount = universe.size
+            )
+        }
 
         /*
-         * فقط سیگنال‌های خرید
-         *
-         * مهم:
-         * finalSignal همان منطق MainActivity است.
-         *
-         * فقط:
-         * 🟢 پیشنهاد خرید
-         * 🟢 پیشنهاد خرید قوی
-         *
-         * مجاز هستند.
+         * ---------------------------------------------------------
+         * 6) فقط BUY و STRONG BUY
+         * ---------------------------------------------------------
          */
         val buyCandidates =
-            finalCandidates
-                .filter {
-                    isBuySignal(it.result)
-                }
+            enrichedCandidates.filter {
+                isBuySignal(it.result)
+            }
 
         /*
-         * 10 ارز برتر از کل بازار
+         * ---------------------------------------------------------
+         * 7) Top 10 کل Binance
+         * ---------------------------------------------------------
          */
         val top10All =
             buyCandidates
                 .sortedWith(
                     compareByDescending<ScanCandidate> {
-                        buyRankingScore(it)
+                        fullRankingScore(it.result)
                     }.thenByDescending {
                         it.quoteVolume
                     }
@@ -374,7 +388,9 @@ class MarketScanner {
                 .take(10)
 
         /*
-         * 10 ارز برتر فقط از رتبه‌های 1 تا 100
+         * ---------------------------------------------------------
+         * 8) Top 10 از Rank 1 تا 100
+         * ---------------------------------------------------------
          */
         val top10Top100 =
             buyCandidates
@@ -383,7 +399,7 @@ class MarketScanner {
                 }
                 .sortedWith(
                     compareByDescending<ScanCandidate> {
-                        buyRankingScore(it)
+                        fullRankingScore(it.result)
                     }.thenByDescending {
                         it.quoteVolume
                     }
@@ -393,335 +409,454 @@ class MarketScanner {
         MarketScanResult(
             top10All = top10All,
             top10Top100 = top10Top100,
-            analyzedCount = finalCandidates.size,
+            analyzedCount = enrichedCandidates.size,
             universeCount = universe.size
         )
     }
 
-    private fun emptyScanResult(): MarketScanResult {
+    /*
+     * -------------------------------------------------------------
+     * فقط نمادهای رسمی Binance با وضعیت TRADING و Quote = USDT
+     * -------------------------------------------------------------
+     */
+    private fun parseTradableUsdtSymbols(
+        raw: String
+    ): Set<String> {
 
-        return MarketScanResult(
-            top10All = emptyList(),
-            top10Top100 = emptyList(),
-            analyzedCount = 0,
-            universeCount = 0
+        val result =
+            HashSet<String>()
+
+        val root =
+            runCatching {
+                org.json.JSONObject(raw)
+            }.getOrElse {
+                return emptySet()
+            }
+
+        val symbols =
+            root.optJSONArray("symbols")
+                ?: return emptySet()
+
+        for (i in 0 until symbols.length()) {
+
+            val obj =
+                symbols.optJSONObject(i)
+                    ?: continue
+
+            val symbol =
+                obj.optString("symbol")
+                    .trim()
+                    .uppercase()
+
+            val status =
+                obj.optString("status")
+                    .trim()
+                    .uppercase()
+
+            val quoteAsset =
+                obj.optString("quoteAsset")
+                    .trim()
+                    .uppercase()
+
+            if (
+                symbol.isNotBlank() &&
+                status == "TRADING" &&
+                quoteAsset == "USDT"
+            ) {
+                result += symbol
+            }
+        }
+
+        return result
+    }
+
+    /*
+     * -------------------------------------------------------------
+     * ساخت Universe فقط از نمادهای تأییدشده Binance
+     * -------------------------------------------------------------
+     */
+    private fun buildUniverse(
+        tickers: JSONArray,
+        allowedSymbols: Set<String>,
+        stableCoins: Set<String>,
+        limit: Int
+    ): List<Pair<String, Double>> {
+
+        val symbols =
+            mutableListOf<Pair<String, Double>>()
+
+        for (i in 0 until tickers.length()) {
+
+            val obj =
+                tickers.optJSONObject(i)
+                    ?: continue
+
+            val symbol =
+                normalizeSymbol(
+                    obj.optString("symbol")
+                )
+
+            if (symbol.isBlank()) continue
+
+            /*
+             * مهم:
+             * اگر در ExchangeInfo نباشد، اصلاً وارد تحلیل نشود.
+             */
+            if (!allowedSymbols.contains(symbol)) {
+                continue
+            }
+
+            if (!symbol.endsWith("USDT")) {
+                continue
+            }
+
+            if (stableCoins.contains(symbol)) {
+                continue
+            }
+
+            val quoteVolume =
+                obj.optDouble(
+                    "quoteVolume",
+                    0.0
+                )
+
+            if (!quoteVolume.isFinite()) {
+                continue
+            }
+
+            if (quoteVolume <= 0.0) {
+                continue
+            }
+
+            symbols +=
+                symbol to quoteVolume
+        }
+
+        return symbols
+            .distinctBy { it.first }
+            .sortedByDescending { it.second }
+            .take(
+                limit.coerceAtLeast(100)
+            )
+    }
+
+    /*
+     * -------------------------------------------------------------
+     * فیلتر سریع تکنیکال
+     * -------------------------------------------------------------
+     */
+    private fun isTechnicalCandidate(
+        result: AnalysisResult
+    ): Boolean {
+
+        val score =
+            result.score.coerceIn(0, 100)
+
+        val pump =
+            result.pump.coerceIn(0, 100)
+
+        val confidence =
+            result.confidence.coerceIn(0, 100)
+
+        val structure =
+            result.structure.score.coerceIn(0, 100)
+
+        return (
+            score >= 55 &&
+            pump >= 50 &&
+            confidence >= 45
+        ) || (
+            score >= 65 &&
+            structure >= 50
+        )
+    }
+
+    private fun technicalPreScore(
+        result: AnalysisResult
+    ): Double {
+
+        val score =
+            result.score.coerceIn(0, 100)
+
+        val pump =
+            result.pump.coerceIn(0, 100)
+
+        val confidence =
+            result.confidence.coerceIn(0, 100)
+
+        val structure =
+            result.structure.score.coerceIn(0, 100)
+
+        val divergence =
+            result.divergence.score.coerceIn(0, 100)
+
+        return (
+            score * 0.40 +
+            pump * 0.20 +
+            confidence * 0.15 +
+            structure * 0.15 +
+            divergence * 0.10
         )
     }
 
     /*
-     * رتبه‌بندی اولیه قبل از Enrichment
-     */
-    private fun rankingScore(
-        candidate: ScanCandidate
-    ): Double {
-
-        val result =
-            candidate.result
-
-        val directional =
-            maxOf(
-                result.pump,
-                result.dump
-            )
-                .coerceIn(0, 100)
-
-        val confidence =
-            result.confidence
-                .coerceIn(0, 100)
-
-        val scoreDistance =
-            kotlin.math.abs(
-                result.score - 50
-            )
-
-        val moneyFlowScore =
-            result.moneyFlowDetails.score
-                .coerceIn(0, 100)
-
-        val flowStrength =
-            kotlin.math.abs(
-                moneyFlowScore - 50
-            )
-
-        return (
-            scoreDistance * 0.40 +
-                directional * 0.20 +
-                confidence * 0.20 +
-                flowStrength * 0.20
-            )
-    }
-
-    /*
-     * امتیاز نهایی برای انتخاب بین ارزهای خرید.
+     * -------------------------------------------------------------
+     * رتبه‌بندی نهایی
      *
-     * برخلاف رتبه‌بندی قبلی، اینجا فقط قدرت صعودی
-     * اهمیت دارد و قدرت Dump باعث بالا آمدن ارز نمی‌شود.
+     * ورود پول:
+     * فقط 1D + 2D + 3D
+     * -------------------------------------------------------------
      */
-    private fun buyRankingScore(
-        candidate: ScanCandidate
+    private fun fullRankingScore(
+        result: AnalysisResult
     ): Double {
-
-        val result =
-            candidate.result
 
         val score =
-            result.score
-                .coerceIn(0, 100)
+            result.score.coerceIn(0, 100)
 
         val confidence =
-            result.confidence
-                .coerceIn(0, 100)
+            result.confidence.coerceIn(0, 100)
 
         val pump =
-            result.pump
-                .coerceIn(0, 100)
+            result.pump.coerceIn(0, 100)
 
-        val moneyFlow =
-            result.moneyFlow
-                .coerceIn(0, 100)
-
-        val news =
-            result.news
-                .coerceIn(0, 100)
+        val newsScore =
+            result.news.coerceIn(0, 100)
 
         val structure =
-            result.structure.score
-                .coerceIn(0, 100)
+            result.structure.score.coerceIn(0, 100)
 
         val divergence =
-            result.divergence.score
-                .coerceIn(0, 100)
+            result.divergence.score.coerceIn(0, 100)
 
-        /*
-         * قدرت ورود پول
-         */
-        val moneyFlowStrength =
+        val recentMoney =
+            recentMoneyFlowScore(result)
+
+        val recentHeavyInflow =
+            recentHeavyInflowPeriods(result)
+
+        val recentUnusualInflow =
+            recentUnusualInflowPeriods(result)
+
+        val heavyBonus =
             when {
-
-                moneyFlow >= 80 ->
-                    12.0
-
-                moneyFlow >= 70 ->
-                    8.0
-
-                moneyFlow >= 60 ->
-                    4.0
-
-                else ->
-                    0.0
+                recentHeavyInflow >= 3 -> 10.0
+                recentHeavyInflow == 2 -> 7.0
+                recentHeavyInflow == 1 -> 3.0
+                else -> 0.0
             }
 
-        /*
-         * ورود سنگین پول
-         */
-        val heavyInflowBonus =
-            if (
-                isHeavyInflow(
-                    result.moneyFlowDetails.label
-                )
-            ) {
-                10.0
-            } else {
-                0.0
-            }
-
-        /*
-         * ورود غیرطبیعی پول
-         *
-         * اگر در یکی از دوره‌های Money Flow
-         * unusualInflow ثبت شده باشد، امتیاز اضافه می‌شود.
-         */
-        val unusualInflowCount =
-            result.moneyFlowDetails.periods.values.count {
-                it.unusualInflow > 0
-            }
-
-        val unusualInflowBonus =
+        val unusualBonus =
             when {
-
-                unusualInflowCount >= 3 ->
-                    12.0
-
-                unusualInflowCount == 2 ->
-                    8.0
-
-                unusualInflowCount == 1 ->
-                    4.0
-
-                else ->
-                    0.0
-            }
-
-        /*
-         * ورود سنگین در چند دوره
-         */
-        val heavyInflowPeriods =
-            result.moneyFlowDetails.periods.values.count {
-                it.unusualInflow > 0 &&
-                    it.netFlowUsd > 0.0
-            }
-
-        val multiPeriodFlowBonus =
-            when {
-
-                heavyInflowPeriods >= 3 ->
-                    8.0
-
-                heavyInflowPeriods == 2 ->
-                    5.0
-
-                heavyInflowPeriods == 1 ->
-                    2.0
-
-                else ->
-                    0.0
-            }
-
-        /*
-         * اگر خروج سنگین وجود داشته باشد، از رتبه کم می‌کنیم.
-         */
-        val heavyOutflowPenalty =
-            if (
-                isHeavyOutflow(
-                    result.moneyFlowDetails.label
-                )
-            ) {
-                12.0
-            } else {
-                0.0
-            }
-
-        /*
-         * اگر Score بالا ولی Money Flow ضعیف باشد،
-         * از امتیاز نهایی کمی کم می‌کنیم.
-         */
-        val flowConflictPenalty =
-            if (
-                score >= 70 &&
-                    moneyFlow < 45
-            ) {
-                6.0
-            } else {
-                0.0
+                recentUnusualInflow >= 3 -> 8.0
+                recentUnusualInflow == 2 -> 5.0
+                recentUnusualInflow == 1 -> 2.0
+                else -> 0.0
             }
 
         return (
-            score * 0.32 +
-                confidence * 0.18 +
-                pump * 0.18 +
-                moneyFlow * 0.12 +
-                news * 0.05 +
-                structure * 0.05 +
-                divergence * 0.03 +
-                moneyFlowStrength +
-                heavyInflowBonus +
-                unusualInflowBonus +
-                multiPeriodFlowBonus -
-                heavyOutflowPenalty -
-                flowConflictPenalty
-            )
+            score * 0.34 +
+            confidence * 0.17 +
+            pump * 0.14 +
+            recentMoney * 0.14 +
+            newsScore * 0.08 +
+            structure * 0.06 +
+            divergence * 0.07 +
+            heavyBonus +
+            unusualBonus
+        )
     }
 
     /*
+     * -------------------------------------------------------------
      * فقط BUY و STRONG BUY
+     *
+     * پول فقط از 1D / 2D / 3D
+     * -------------------------------------------------------------
      */
     private fun isBuySignal(
         result: AnalysisResult
     ): Boolean {
 
-        val score =
-            result.score
-                .coerceIn(0, 100)
+        val engineSignal =
+            result.signal
+                .trim()
+                .uppercase()
 
-        val confidence =
-            result.confidence
-                .coerceIn(0, 100)
+        val isEngineBuy =
+            engineSignal == "BUY" ||
+            engineSignal == "STRONG BUY"
 
-        val pump =
-            result.pump
-                .coerceIn(0, 100)
+        if (!isEngineBuy) {
+            return false
+        }
 
-        val heavyInflow =
-            isHeavyInflow(
-                result.moneyFlowDetails.label
+        val recentMoney =
+            recentMoneyFlowScore(result)
+
+        val recentHeavy =
+            recentHeavyInflowPeriods(result)
+
+        val recentUnusual =
+            recentUnusualInflowPeriods(result)
+
+        val recentHeavyOutflow =
+            recentHeavyOutflowPeriods(result)
+
+        if (recentHeavyOutflow >= 2) {
+            return false
+        }
+
+        if (engineSignal == "STRONG BUY") {
+
+            return (
+                recentMoney >= 58.0 &&
+                recentHeavy >= 2 &&
+                recentUnusual >= 1
             )
+        }
 
-        val heavyOutflow =
-            isHeavyOutflow(
-                result.moneyFlowDetails.label
+        return (
+            recentMoney >= 50.0 &&
+            (
+                recentHeavy >= 1 ||
+                recentUnusual >= 1
             )
+        )
+    }
 
-        /*
-         * پیشنهاد خرید قوی
-         */
-        val strongBuy =
-            score >= 82 &&
-                confidence >= 75 &&
-                pump >= 75 &&
-                heavyInflow &&
-                result.news >= 45 &&
-                !heavyOutflow
+    /*
+     * -------------------------------------------------------------
+     * Money Flow فقط برای 1D / 2D / 3D
+     * -------------------------------------------------------------
+     */
+    private fun recentMoneyFlowScore(
+        result: AnalysisResult
+    ): Double {
 
-        if (strongBuy) {
-            return true
+        val periods =
+            result.moneyFlowDetails.periods
+
+        val p1 =
+            periods["1D"]
+
+        val p2 =
+            periods["2D"]
+
+        val p3 =
+            periods["3D"]
+
+        var weightedScore = 0.0
+        var totalWeight = 0.0
+
+        fun add(
+            period: MoneyFlowPeriod?,
+            weight: Double
+        ) {
+
+            if (period == null) {
+                return
+            }
+
+            val inflow =
+                period.inflowUsd
+
+            val outflow =
+                period.outflowUsd
+
+            val net =
+                period.netFlowUsd
+
+            val total =
+                inflow + outflow
+
+            val ratio =
+                if (total > 0.0) {
+                    net / total
+                } else {
+                    0.0
+                }
+
+            val normalized =
+                (
+                    50.0 +
+                    ratio * 50.0
+                ).coerceIn(
+                    0.0,
+                    100.0
+                )
+
+            weightedScore +=
+                normalized * weight
+
+            totalWeight += weight
         }
 
         /*
-         * پیشنهاد خرید
+         * وزن بیشتر برای جدیدترین دوره.
          */
-        val buy =
-            score >= 70 &&
-                confidence >= 60 &&
-                pump >= 65 &&
-                !heavyOutflow
+        add(p1, 1.0)
+        add(p2, 0.8)
+        add(p3, 0.6)
 
-        return buy
+        if (totalWeight <= 0.0) {
+            return 50.0
+        }
+
+        return (
+            weightedScore / totalWeight
+        ).coerceIn(
+            0.0,
+            100.0
+        )
     }
 
-    private fun isHeavyInflow(
-        label: String
-    ): Boolean {
+    private fun recentHeavyInflowPeriods(
+        result: AnalysisResult
+    ): Int {
 
-        val normalized =
-            label
-                .trim()
-                .uppercase()
+        return recentPeriods(result)
+            .count {
 
-        return normalized.contains(
-            "HEAVY INFLOW"
-        ) ||
-            normalized.contains(
-                "INFLOW HEAVY"
-            ) ||
-            label.contains(
-                "ورود سنگین"
-            ) ||
-            label.contains(
-                "ورود غیرعادی"
-            )
+                it.unusualInflow > 0 &&
+                it.netFlowUsd > 0.0
+            }
     }
 
-    private fun isHeavyOutflow(
-        label: String
-    ): Boolean {
+    private fun recentUnusualInflowPeriods(
+        result: AnalysisResult
+    ): Int {
 
-        val normalized =
-            label
-                .trim()
-                .uppercase()
+        return recentPeriods(result)
+            .count {
+                it.unusualInflow > 0
+            }
+    }
 
-        return normalized.contains(
-            "HEAVY OUTFLOW"
-        ) ||
-            normalized.contains(
-                "OUTFLOW HEAVY"
-            ) ||
-            label.contains(
-                "خروج سنگین"
-            ) ||
-            label.contains(
-                "خروج غیرعادی"
-            )
+    private fun recentHeavyOutflowPeriods(
+        result: AnalysisResult
+    ): Int {
+
+        return recentPeriods(result)
+            .count {
+
+                it.unusualOutflow > 0 &&
+                it.netFlowUsd < 0.0
+            }
+    }
+
+    private fun recentPeriods(
+        result: AnalysisResult
+    ): List<MoneyFlowPeriod> {
+
+        val periods =
+            result.moneyFlowDetails.periods
+
+        return listOfNotNull(
+            periods["1D"],
+            periods["2D"],
+            periods["3D"]
+        )
     }
 
     private fun normalizeSymbol(
@@ -729,8 +864,7 @@ class MarketScanner {
     ): String {
 
         var symbol =
-            raw
-                .trim()
+            raw.trim()
                 .uppercase()
                 .replace("/", "")
                 .replace("-", "")
@@ -816,16 +950,35 @@ class MarketScanner {
                 }
 
                 output += Candle(
-                    close = close,
-                    high = high,
-                    low = low,
-                    volume = volume,
-                    quoteVolume = quoteVolume,
-                    openTime = openTime
+                    close,
+                    high,
+                    low,
+                    volume,
+                    quoteVolume,
+                    openTime
                 )
             }
         }
 
         return output
     }
+
+    private fun emptyScanResult(): MarketScanResult =
+        MarketScanResult(
+            top10All = emptyList(),
+            top10Top100 = emptyList(),
+            analyzedCount = 0,
+            universeCount = 0
+        )
+}
+
+/*
+ * Binance Spot Exchange Information
+ *
+ * GET /api/v3/exchangeInfo
+ */
+private interface BinanceExchangeApi {
+
+    @GET("api/v3/exchangeInfo")
+    suspend fun exchangeInfo(): ResponseBody
 }
