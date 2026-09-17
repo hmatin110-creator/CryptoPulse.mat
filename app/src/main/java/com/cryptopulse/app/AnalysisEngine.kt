@@ -78,6 +78,7 @@ data class AnalysisWeights(
     val btc: Double = 0.08
 ) {
     fun normalized(): AnalysisWeights {
+
         val sum =
             technical +
                 moneyFlow +
@@ -87,7 +88,9 @@ data class AnalysisWeights(
                 news +
                 btc
 
-        if (sum <= 0) return AnalysisWeights()
+        if (sum <= 0) {
+            return AnalysisWeights()
+        }
 
         return AnalysisWeights(
             technical / sum,
@@ -108,10 +111,13 @@ data class AnalysisResult(
     val confidence: Int,
     val signal: String,
     val reasons: List<String>,
+
     val moneyFlow: Int = 50,
     val trend: Int = 50,
     val news: Int = 50,
+
     val timeframeScores: Map<String, Int> = emptyMap(),
+
     val moneyFlowDetails: MoneyFlowResult =
         MoneyFlowResult(
             50,
@@ -119,6 +125,7 @@ data class AnalysisResult(
             "خنثی",
             emptyList()
         ),
+
     val structure: StructureResult =
         StructureResult(
             50,
@@ -129,6 +136,7 @@ data class AnalysisResult(
             0.0,
             emptyList()
         ),
+
     val divergence: DivergenceResult =
         DivergenceResult(
             50,
@@ -137,13 +145,17 @@ data class AnalysisResult(
             false,
             emptyList()
         ),
+
     val btcRegime: BtcRegime =
         BtcRegime(
             50,
             "NEUTRAL",
             emptyList()
         ),
-    val tradePlan: TradePlan? = null
+
+    val tradePlan: TradePlan? = null,
+
+    val finalAnalysis: String = "تحلیل نهایی: داده کافی برای جمع‌بندی وجود ندارد"
 )
 
 data class MarketFlowData(
@@ -183,13 +195,18 @@ object AnalysisEngine {
     ): AnalysisResult {
 
         if (candles.size < 60) {
+
             return AnalysisResult(
-                0,
-                0,
-                0,
-                0,
-                "WAIT",
-                listOf("داده کافی نیست")
+                score = 0,
+                pump = 0,
+                dump = 0,
+                confidence = 0,
+                signal = "WAIT",
+                reasons = listOf(
+                    "داده کافی برای تحلیل نهایی وجود ندارد"
+                ),
+                finalAnalysis =
+                    "تحلیل نهایی: داده کافی نیست"
             )
         }
 
@@ -247,7 +264,7 @@ object AnalysisEngine {
                     weightedTimeframe * w.timeframe +
                     structure.score * w.structure +
                     divergence.score * w.divergence +
-                    newsScore * w.news +
+                    newsScore.coerceIn(0, 100) * w.news +
                     btc.score * w.btc
                 ).roundToInt()
 
@@ -275,6 +292,15 @@ object AnalysisEngine {
             core.tech <= 35 &&
                 weightedTimeframe <= 40
 
+        /*
+         * تضاد جدی:
+         *
+         * روند صعودی ولی خروج سنگین
+         * یا
+         * روند نزولی ولی ورود سنگین
+         *
+         * در این حالت سیگنال نباید به‌سادگی STRONG شود.
+         */
         val moneyConflict =
             (
                 bullishTechnical &&
@@ -285,15 +311,87 @@ object AnalysisEngine {
                         heavyInflowPeriods >= 2
                 )
 
+        /*
+         * ورود/خروج غیرعادی در چند بازه
+         * نسبت به یک بازه معمولی اهمیت بیشتری دارد.
+         */
         if (heavyInflowPeriods >= 2) {
-            score += 5
+            score += 6
         }
 
         if (heavyOutflowPeriods >= 2) {
-            score -= 5
+            score -= 6
         }
 
+        /*
+         * تأیید روند توسط جریان پول.
+         */
+        if (
+            bullishTechnical &&
+            bullishMoney
+        ) {
+            score += 4
+        }
+
+        if (
+            bearishTechnical &&
+            bearishMoney
+        ) {
+            score -= 4
+        }
+
+        /*
+         * شکست ساختار همراه با جریان پول.
+         */
+        if (
+            structure.breakout &&
+            heavyInflowPeriods >= 1
+        ) {
+            score += 4
+        }
+
+        if (
+            structure.breakdown &&
+            heavyOutflowPeriods >= 1
+        ) {
+            score -= 4
+        }
+
+        /*
+         * واگرایی نیز در صورت تضاد با روند،
+         * مانع Strong شدن سیگنال می‌شود.
+         */
+        val divergenceConflict =
+            (
+                bullishTechnical &&
+                    divergence.bearish
+                ) ||
+                (
+                    bearishTechnical &&
+                        divergence.bullish
+                )
+
+        if (divergenceConflict) {
+
+            score =
+                when {
+                    score > 50 ->
+                        min(score, 76)
+
+                    score < 50 ->
+                        max(score, 24)
+
+                    else ->
+                        score
+                }
+        }
+
+        /*
+         * تضاد Money Flow با تکنیکال
+         * سیگنال را به محدوده Hold نزدیک می‌کند.
+         */
         if (moneyConflict) {
+
             score =
                 when {
                     score > 60 ->
@@ -307,6 +405,10 @@ object AnalysisEngine {
                 }
         }
 
+        /*
+         * خبر فقط زمانی اثر قابل‌توجه دارد
+         * که Confidence خبر بالا باشد.
+         */
         if (
             newsConfidence >= 65 &&
             newsScore <= 25 &&
@@ -340,7 +442,10 @@ object AnalysisEngine {
                 ).roundToInt()
                 .coerceIn(1, 98)
 
-        val agreement =
+        /*
+         * اندازه‌گیری توافق مؤلفه‌ها.
+         */
+        val bullishComponents =
             listOf(
                 core.tech >= 60,
                 weightedTimeframe >= 60,
@@ -348,6 +453,16 @@ object AnalysisEngine {
                 structure.score >= 60,
                 divergence.score >= 60,
                 btc.score >= 60
+            ).count { it }
+
+        val bearishComponents =
+            listOf(
+                core.tech <= 40,
+                weightedTimeframe <= 40,
+                money.score <= 40,
+                structure.score <= 40,
+                divergence.score <= 40,
+                btc.score <= 40
             ).count { it }
 
         val disagreement =
@@ -360,58 +475,106 @@ object AnalysisEngine {
                 btc.score <= 40
             ).count { it }
 
-        val confidence =
-            (
-                42 +
-                    minOf(12, candles.size / 40) +
-                    agreement * 5 +
-                    minOf(15, money.confidence / 7) +
-                    if (newsConfidence >= 60) 8 else 0 +
-                    if (flow.openInterestHistory.isNotEmpty()) 5 else 0 +
-                    if (flow.takerVolumeHistory.isNotEmpty()) 5 else 0 -
-                    minOf(12, disagreement * 2) -
-                    if (moneyConflict) 10 else 0
-                ).coerceIn(0, 98)
+        val baseConfidence =
+            42 +
+                minOf(12, candles.size / 40) +
+                maxOf(
+                    bullishComponents,
+                    bearishComponents
+                ) * 5 +
+                minOf(
+                    15,
+                    money.confidence / 7
+                ) +
+                if (newsConfidence >= 60) 8 else 0 +
+                if (flow.openInterestHistory.isNotEmpty()) 5 else 0 +
+                if (flow.takerVolumeHistory.isNotEmpty()) 5 else 0 -
+                minOf(
+                    12,
+                    disagreement * 2
+                ) -
+                if (moneyConflict) 10 else 0 -
+                if (divergenceConflict) 6 else 0
 
+        val confidence =
+            baseConfidence.coerceIn(0, 98)
+
+        /*
+         * ---------------------------------------------------------
+         * FINAL SIGNAL
+         * ---------------------------------------------------------
+         *
+         * STRONG BUY:
+         * - امتیاز بالا
+         * - اعتماد بالا
+         * - ورود سنگین در چند بازه
+         * - تکنیکال و تایم‌فریم تأییدکننده
+         * - تضاد جدی وجود نداشته باشد
+         *
+         * BUY:
+         * - شرایط صعودی مناسب
+         *
+         * HOLD:
+         * - شرایط متناقض یا فاقد تأیید کافی
+         *
+         * SELL / STRONG SELL:
+         * - قرینه حالت خرید
+         */
         val signal =
             when {
 
-                confidence < 60 ->
-                    "WAIT"
+                confidence < 58 ->
+                    "HOLD"
 
                 moneyConflict ->
+                    "HOLD"
+
+                divergenceConflict &&
+                    confidence < 78 ->
                     "HOLD"
 
                 score >= 82 &&
                     confidence >= 78 &&
                     heavyInflowPeriods >= 2 &&
                     bullishTechnical &&
-                    btc.score >= 55 &&
-                    newsScore >= 35 ->
+                    bullishMoney &&
+                    btc.score >= 55 ->
                     "STRONG BUY"
 
-                score >= 72 &&
-                    confidence >= 65 &&
+                score >= 70 &&
+                    confidence >= 64 &&
                     (
-                        bullishMoney ||
+                        bullishMoney &&
                             bullishTechnical
-                        ) ->
+                        ||
+                        bullishMoney &&
+                            structure.score >= 60
+                        ||
+                        bullishTechnical &&
+                            structure.breakout
+                    ) ->
                     "BUY"
 
                 score <= 18 &&
                     confidence >= 78 &&
                     heavyOutflowPeriods >= 2 &&
                     bearishTechnical &&
-                    btc.score <= 45 &&
-                    newsScore <= 65 ->
+                    bearishMoney &&
+                    btc.score <= 45 ->
                     "STRONG SELL"
 
                 score <= 30 &&
-                    confidence >= 65 &&
+                    confidence >= 64 &&
                     (
-                        bearishMoney ||
+                        bearishMoney &&
                             bearishTechnical
-                        ) ->
+                        ||
+                        bearishMoney &&
+                            structure.score <= 40
+                        ||
+                        bearishTechnical &&
+                            structure.breakdown
+                    ) ->
                     "SELL"
 
                 else ->
@@ -437,24 +600,77 @@ object AnalysisEngine {
                 "خروج سنگین و غیرعادی پول در چند بازه زمانی تأیید شده است"
         }
 
+        if (
+            bullishTechnical &&
+            bullishMoney
+        ) {
+            reasons +=
+                "روند تکنیکال و جریان پول هم‌جهت هستند"
+        }
+
+        if (
+            bearishTechnical &&
+            bearishMoney
+        ) {
+            reasons +=
+                "روند تکنیکال و جریان پول نزولی و هم‌جهت هستند"
+        }
+
         if (moneyConflict) {
             reasons +=
-                "بین جریان پول و روند تکنیکال تضاد وجود دارد؛ سیگنال downgrade شد"
+                "بین جریان پول و روند تکنیکال تضاد وجود دارد؛ سیگنال به نگهداری/انتظار کاهش یافت"
+        }
+
+        if (divergenceConflict) {
+            reasons +=
+                "واگرایی با جهت اصلی روند در تضاد است"
+        }
+
+        if (structure.breakout) {
+            reasons +=
+                "ساختار بازار شکست صعودی نشان می‌دهد"
+        }
+
+        if (structure.breakdown) {
+            reasons +=
+                "ساختار بازار شکست نزولی نشان می‌دهد"
         }
 
         reasons +=
-            "News score: $newsScore/100"
+            "امتیاز اخبار: $newsScore/100"
 
         if (newsConfidence >= 60) {
             reasons +=
                 "اعتماد تحلیل خبر: $newsConfidence/100"
         }
 
+        /*
+         * Trade Plan فقط برای BUY/SELL.
+         */
         val plan =
             buildTradePlan(
                 candles,
                 structure,
                 signal
+            )
+
+        /*
+         * تحلیل نهایی قابل نمایش در UI.
+         */
+        val finalAnalysis =
+            buildFinalAnalysis(
+                signal = signal,
+                score = score,
+                confidence = confidence,
+                money = money,
+                weightedTimeframe = weightedTimeframe,
+                structure = structure,
+                divergence = divergence,
+                btc = btc,
+                heavyInflowPeriods = heavyInflowPeriods,
+                heavyOutflowPeriods = heavyOutflowPeriods,
+                moneyConflict = moneyConflict,
+                divergenceConflict = divergenceConflict
             )
 
         return AnalysisResult(
@@ -472,8 +688,126 @@ object AnalysisEngine {
             structure = structure,
             divergence = divergence,
             btcRegime = btc,
-            tradePlan = plan
+            tradePlan = plan,
+            finalAnalysis = finalAnalysis
         )
+    }
+
+    private fun buildFinalAnalysis(
+        signal: String,
+        score: Int,
+        confidence: Int,
+        money: MoneyFlowResult,
+        weightedTimeframe: Int,
+        structure: StructureResult,
+        divergence: DivergenceResult,
+        btc: BtcRegime,
+        heavyInflowPeriods: Int,
+        heavyOutflowPeriods: Int,
+        moneyConflict: Boolean,
+        divergenceConflict: Boolean
+    ): String {
+
+        val signalText =
+            when (signal) {
+                "STRONG BUY" ->
+                    "🟢 خرید قوی"
+
+                "BUY" ->
+                    "🟢 خرید"
+
+                "STRONG SELL" ->
+                    "🔴 فروش قوی"
+
+                "SELL" ->
+                    "🔴 فروش"
+
+                else ->
+                    "🟡 نگهداری / انتظار"
+            }
+
+        val parts =
+            mutableListOf<String>()
+
+        parts +=
+            "تحلیل نهایی: $signalText"
+
+        parts +=
+            "امتیاز: $score/100"
+
+        parts +=
+            "اعتماد: $confidence/100"
+
+        parts +=
+            "روند چندتایم‌فریمی: $weightedTimeframe/100"
+
+        parts +=
+            "جریان پول: ${money.score}/100"
+
+        when {
+            heavyInflowPeriods >= 2 ->
+                parts +=
+                    "ورود پول غیرعادی در $heavyInflowPeriods بازه تأیید شده"
+
+            heavyOutflowPeriods >= 2 ->
+                parts +=
+                    "خروج پول غیرعادی در $heavyOutflowPeriods بازه تأیید شده"
+
+            money.score >= 68 ->
+                parts +=
+                    "جریان پول متمایل به ورود است"
+
+            money.score <= 32 ->
+                parts +=
+                    "جریان پول متمایل به خروج است"
+
+            else ->
+                parts +=
+                    "جریان پول وضعیت خنثی دارد"
+        }
+
+        when {
+            structure.breakout ->
+                parts +=
+                    "ساختار: شکست صعودی مقاومت"
+
+            structure.breakdown ->
+                parts +=
+                    "ساختار: شکست نزولی حمایت"
+
+            else ->
+                parts +=
+                    "ساختار: بازار در محدوده قرار دارد"
+        }
+
+        when {
+            divergence.bullish ->
+                parts +=
+                    "واگرایی: مثبت"
+
+            divergence.bearish ->
+                parts +=
+                    "واگرایی: منفی"
+
+            else ->
+                parts +=
+                    "واگرایی مهمی تأیید نشده"
+        }
+
+        parts +=
+            "وضعیت BTC: ${btc.label}"
+
+        if (moneyConflict) {
+            parts +=
+                "هشدار: تضاد بین جریان پول و روند وجود دارد"
+        }
+
+        if (divergenceConflict) {
+            parts +=
+                "هشدار: واگرایی با جهت اصلی روند هم‌جهت نیست"
+        }
+
+        return parts.joinToString(" • ")
     }
 
     private data class Core(
@@ -488,28 +822,38 @@ object AnalysisEngine {
         val x =
             candles.map { it.close }
 
-        val last = x.last()
+        val last =
+            x.last()
 
         fun ema(period: Int) =
             ema(x, period)
 
         fun rsi(period: Int = 14): Double {
 
-            if (x.size <= period) return 50.0
+            if (x.size <= period) {
+                return 50.0
+            }
 
             var gain = 0.0
             var loss = 0.0
 
-            for (i in x.size - period until x.size) {
+            for (
+                i in x.size - period until x.size
+            ) {
 
                 val d =
                     x[i] - x[i - 1]
 
-                if (d >= 0) gain += d
-                else loss -= d
+                if (d >= 0) {
+                    gain += d
+                } else {
+                    loss -= d
+                }
             }
 
-            if (loss == 0.0) return 100.0
+            if (loss == 0.0) {
+                return 100.0
+            }
 
             val rs =
                 (gain / period) /
@@ -519,57 +863,76 @@ object AnalysisEngine {
                 100 / (1 + rs)
         }
 
-        val e20 = ema(20)
-        val e50 = ema(50)
-        val e100 = ema(100)
-        val e200 = ema(200)
-        val rsi = rsi()
+        val e20 =
+            ema(20)
+
+        val e50 =
+            ema(50)
+
+        val e100 =
+            ema(100)
+
+        val e200 =
+            ema(200)
+
+        val rsi =
+            rsi()
 
         var score = 50
-        val reasons = mutableListOf<String>()
+
+        val reasons =
+            mutableListOf<String>()
 
         if (last > e20) {
             score += 8
-            reasons += "قیمت بالای EMA20"
+            reasons +=
+                "قیمت بالای EMA20"
         } else {
             score -= 8
         }
 
         if (e20 > e50) {
             score += 8
-            reasons += "EMA20 بالای EMA50"
+            reasons +=
+                "EMA20 بالای EMA50"
         } else {
             score -= 8
         }
 
         if (e50 > e100) {
             score += 6
-            reasons += "روند میان‌مدت صعودی"
+            reasons +=
+                "روند میان‌مدت صعودی"
         } else {
             score -= 6
         }
 
         if (last > e200) {
             score += 8
-            reasons += "قیمت بالای EMA200"
+            reasons +=
+                "قیمت بالای EMA200"
         } else {
             score -= 8
         }
 
         when {
+
             rsi in 52.0..68.0 -> {
                 score += 7
-                reasons += "RSI در محدوده سالم"
+                reasons +=
+                    "RSI در محدوده سالم"
             }
 
             rsi > 75 -> {
                 score -= 5
-                reasons += "RSI بیش‌خرید"
+                reasons +=
+                    "RSI بیش‌خرید"
             }
 
             rsi < 30 -> {
                 score += 3
-                reasons += "RSI اشباع فروش"
+                reasons +=
+                    "RSI اشباع فروش"
             }
         }
 
@@ -605,17 +968,23 @@ object AnalysisEngine {
         periods.values.forEach { p ->
 
             val total =
-                (p.inflowUsd + p.outflowUsd)
-                    .coerceAtLeast(1.0)
+                (
+                    p.inflowUsd +
+                        p.outflowUsd
+                    ).coerceAtLeast(1.0)
 
             val direction =
-                (p.inflowUsd - p.outflowUsd) /
-                    total
+                (
+                    p.inflowUsd -
+                        p.outflowUsd
+                    ) / total
 
             val weight =
                 weights[p.key] ?: 0.10
 
-            weighted += direction * weight
+            weighted +=
+                direction * weight
+
             totalWeight += weight
         }
 
@@ -671,7 +1040,9 @@ object AnalysisEngine {
         }
 
         val cmfValue =
-            cmf(candles.takeLast(20))
+            cmf(
+                candles.takeLast(20)
+            )
 
         score +=
             (cmfValue * 20)
@@ -687,23 +1058,29 @@ object AnalysisEngine {
         }
 
         val obv =
-            obvSlope(candles.takeLast(20))
+            obvSlope(
+                candles.takeLast(20)
+            )
 
         score +=
             (obv * 10)
                 .roundToInt()
                 .coerceIn(-8, 8)
 
-        if (flow.openInterestHistory.size >= 2) {
+        if (
+            flow.openInterestHistory.size >= 2
+        ) {
 
             val first =
-                flow.openInterestHistory.first()
+                flow.openInterestHistory
+                    .first()
                     .sumOpenInterestValue
                     .toDoubleOrNull()
                     ?: 0.0
 
             val last =
-                flow.openInterestHistory.last()
+                flow.openInterestHistory
+                    .last()
                     .sumOpenInterestValue
                     .toDoubleOrNull()
                     ?: 0.0
@@ -714,6 +1091,7 @@ object AnalysisEngine {
                     last / first - 1
 
                 when {
+
                     change > 0.05 -> {
                         score += 6
                         reasons +=
@@ -729,7 +1107,9 @@ object AnalysisEngine {
             }
         }
 
-        if (flow.takerVolumeHistory.isNotEmpty()) {
+        if (
+            flow.takerVolumeHistory.isNotEmpty()
+        ) {
 
             val buy =
                 flow.takerVolumeHistory.sumOf {
@@ -746,8 +1126,9 @@ object AnalysisEngine {
                 }
 
             val total =
-                (buy + sell)
-                    .coerceAtLeast(1.0)
+                (
+                    buy + sell
+                    ).coerceAtLeast(1.0)
 
             val imbalance =
                 (buy - sell) / total
@@ -758,9 +1139,11 @@ object AnalysisEngine {
                     .coerceIn(-10, 10)
 
             if (imbalance > 0.12) {
-                reasons += "Taker Buy غالب است"
+                reasons +=
+                    "Taker Buy غالب است"
             } else if (imbalance < -0.12) {
-                reasons += "Taker Sell غالب است"
+                reasons +=
+                    "Taker Sell غالب است"
             }
         }
 
@@ -787,14 +1170,17 @@ object AnalysisEngine {
         flow.fundingRate?.let {
 
             when {
+
                 it > 0.0015 -> {
                     score -= 4
-                    reasons += "Funding بالا است"
+                    reasons +=
+                        "Funding بالا است"
                 }
 
                 it < -0.0015 -> {
                     score += 4
-                    reasons += "Funding منفی است"
+                    reasons +=
+                        "Funding منفی است"
                 }
             }
         }
@@ -811,6 +1197,7 @@ object AnalysisEngine {
 
         val label =
             when {
+
                 heavyInflow >= 2 ->
                     "ورود سنگین و غیرعادی"
 
@@ -830,11 +1217,18 @@ object AnalysisEngine {
         val confidence =
             (
                 30 +
-                    minOf(30, periods.size * 3) +
+                    minOf(
+                        30,
+                        periods.size * 3
+                    ) +
                     heavyInflow * 6 +
                     heavyOutflow * 6 +
-                    if (flow.openInterestHistory.isNotEmpty()) 8 else 0 +
-                    if (flow.takerVolumeHistory.isNotEmpty()) 8 else 0
+                    if (
+                        flow.openInterestHistory.isNotEmpty()
+                    ) 8 else 0 +
+                    if (
+                        flow.takerVolumeHistory.isNotEmpty()
+                    ) 8 else 0
                 ).coerceIn(0, 95)
 
         return MoneyFlowResult(
@@ -860,12 +1254,16 @@ object AnalysisEngine {
 
         periods.forEach { definition ->
 
-            if (candles.size < definition.days) {
+            if (
+                candles.size <
+                definition.days
+            ) {
                 return@forEach
             }
 
             val start =
-                candles.size - definition.days
+                candles.size -
+                    definition.days
 
             val current =
                 candles.subList(
@@ -874,7 +1272,8 @@ object AnalysisEngine {
                 )
 
             val previousStart =
-                start - definition.days
+                start -
+                    definition.days
 
             val previous =
                 if (previousStart >= 0) {
@@ -903,7 +1302,9 @@ object AnalysisEngine {
             val unusual =
                 unusualIntensity(
                     current,
-                    candles.take(start).takeLast(60)
+                    candles
+                        .take(start)
+                        .takeLast(60)
                 )
 
             val status =
@@ -918,26 +1319,33 @@ object AnalysisEngine {
                 mutableListOf<String>()
 
             if (unusual.first >= 75) {
-                reasons += "ورود غیرعادی"
+                reasons +=
+                    "ورود غیرعادی"
             }
 
             if (unusual.second >= 75) {
-                reasons += "خروج غیرعادی"
+                reasons +=
+                    "خروج غیرعادی"
             }
 
             if (currentNet > 0) {
-                reasons += "خالص جریان مثبت"
+                reasons +=
+                    "خالص جریان مثبت"
             } else if (currentNet < 0) {
-                reasons += "خالص جریان منفی"
+                reasons +=
+                    "خالص جریان منفی"
             }
 
             result[definition.key] =
                 MoneyFlowPeriod(
                     key = definition.key,
                     title = definition.title,
-                    inflowUsd = currentFlow.inflow,
-                    outflowUsd = currentFlow.outflow,
-                    netFlowUsd = currentNet,
+                    inflowUsd =
+                        currentFlow.inflow,
+                    outflowUsd =
+                        currentFlow.outflow,
+                    netFlowUsd =
+                        currentNet,
                     inflowChangePct =
                         percentageChange(
                             currentFlow.inflow,
@@ -953,15 +1361,26 @@ object AnalysisEngine {
                             abs(currentNet),
                             abs(previousNet)
                         ),
-                    unusualInflow = unusual.first,
-                    unusualOutflow = unusual.second,
+                    unusualInflow =
+                        unusual.first,
+                    unusualOutflow =
+                        unusual.second,
                     confidence =
                         (
                             45 +
-                                if (previous.isNotEmpty()) 20 else 0 +
-                                if (definition.days >= 30) 10 else 0 +
-                                if (definition.days >= 90) 5 else 0
-                            ).coerceIn(0, 95),
+                                if (
+                                    previous.isNotEmpty()
+                                ) 20 else 0 +
+                                if (
+                                    definition.days >= 30
+                                ) 10 else 0 +
+                                if (
+                                    definition.days >= 90
+                                ) 5 else 0
+                            ).coerceIn(
+                                0,
+                                95
+                            ),
                     status = status,
                     reasons = reasons
                 )
@@ -982,11 +1401,15 @@ object AnalysisEngine {
             val value =
                 effectiveQuoteVolume(c)
 
-            if (value <= 0) return@forEach
+            if (value <= 0) {
+                return@forEach
+            }
 
             val range =
-                (c.high - c.low)
-                    .coerceAtLeast(1e-9)
+                (
+                    c.high -
+                        c.low
+                    ).coerceAtLeast(1e-9)
 
             val multiplier =
                 (
@@ -994,13 +1417,18 @@ object AnalysisEngine {
                         (c.close - c.low) -
                             (c.high - c.close)
                         ) / range
-                    ).coerceIn(-1.0, 1.0)
+                    ).coerceIn(
+                        -1.0,
+                        1.0
+                    )
 
             inflow +=
-                value * (0.5 + multiplier * 0.5)
+                value *
+                    (0.5 + multiplier * 0.5)
 
             outflow +=
-                value * (0.5 - multiplier * 0.5)
+                value *
+                    (0.5 - multiplier * 0.5)
         }
 
         return DirectionalFlow(
@@ -1014,7 +1442,10 @@ object AnalysisEngine {
         baseline: List<Candle>
     ): Pair<Int, Int> {
 
-        if (current.isEmpty() || baseline.isEmpty()) {
+        if (
+            current.isEmpty() ||
+            baseline.isEmpty()
+        ) {
             return 50 to 50
         }
 
@@ -1023,20 +1454,28 @@ object AnalysisEngine {
 
         val baselineFlows =
             baseline.map {
-                directionalFlow(listOf(it))
+                directionalFlow(
+                    listOf(it)
+                )
             }
 
         val inflows =
-            baselineFlows.map { it.inflow }
+            baselineFlows.map {
+                it.inflow
+            }
 
         val outflows =
-            baselineFlows.map { it.outflow }
+            baselineFlows.map {
+                it.outflow
+            }
 
         val avgIn =
-            inflows.average().coerceAtLeast(1.0)
+            inflows.average()
+                .coerceAtLeast(1.0)
 
         val avgOut =
-            outflows.average().coerceAtLeast(1.0)
+            outflows.average()
+                .coerceAtLeast(1.0)
 
         val dailyIn =
             currentFlow.inflow /
@@ -1056,12 +1495,16 @@ object AnalysisEngine {
             (
                 50 +
                     (inRatio - 1) * 35
-                ).roundToInt().coerceIn(0, 100)
+                )
+                .roundToInt()
+                .coerceIn(0, 100)
             ) to (
             (
                 50 +
                     (outRatio - 1) * 35
-                ).roundToInt().coerceIn(0, 100)
+                )
+                .roundToInt()
+                .coerceIn(0, 100)
             )
     }
 
@@ -1073,17 +1516,25 @@ object AnalysisEngine {
     ): String {
 
         val total =
-            (inflow + outflow)
-                .coerceAtLeast(1.0)
+            (
+                inflow +
+                    outflow
+                ).coerceAtLeast(1.0)
 
         val ratio =
-            (inflow - outflow) / total
+            (
+                inflow -
+                    outflow
+                ) / total
 
         return when {
-            ratio >= 0.12 && unusualInflow >= 75 ->
+
+            ratio >= 0.12 &&
+                unusualInflow >= 75 ->
                 "ورود سنگین و غیرعادی"
 
-            ratio <= -0.12 && unusualOutflow >= 75 ->
+            ratio <= -0.12 &&
+                unusualOutflow >= 75 ->
                 "خروج سنگین و غیرعادی"
 
             ratio >= 0.08 ->
@@ -1103,12 +1554,19 @@ object AnalysisEngine {
     ): Double {
 
         if (previous <= 1e-9) {
-            return if (current > 0) 100.0 else 0.0
+            return if (
+                current > 0
+            ) {
+                100.0
+            } else {
+                0.0
+            }
         }
 
         return (
-            (current - previous) /
-                previous
+            (
+                current - previous
+                ) / previous
             ) * 100
     }
 
@@ -1116,19 +1574,21 @@ object AnalysisEngine {
         candle: Candle
     ): Double =
         when {
+
             candle.quoteVolume > 0 ->
                 candle.quoteVolume
 
             candle.volume > 0 &&
                 candle.close > 0 ->
-                candle.volume * candle.close
+                candle.volume *
+                    candle.close
 
             else ->
                 0.0
         }
 
     private fun cmf(
-        candles: List<Candle>
+        candles: List<Candle
     ): Double {
 
         var money = 0.0
@@ -1137,8 +1597,10 @@ object AnalysisEngine {
         candles.forEach { c ->
 
             val range =
-                (c.high - c.low)
-                    .coerceAtLeast(1e-9)
+                (
+                    c.high -
+                        c.low
+                    ).coerceAtLeast(1e-9)
 
             val multiplier =
                 (
@@ -1157,26 +1619,40 @@ object AnalysisEngine {
             volume += value
         }
 
-        return if (volume <= 0) 0.0
-        else money / volume
+        return if (
+            volume <= 0
+        ) {
+            0.0
+        } else {
+            money / volume
+        }
     }
 
     private fun obvSlope(
         candles: List<Candle>
     ): Double {
 
-        if (candles.size < 3) return 0.0
+        if (candles.size < 3) {
+            return 0.0
+        }
 
         var obv = 0.0
-        val values = mutableListOf<Double>()
 
-        for (i in 1 until candles.size) {
+        val values =
+            mutableListOf<Double>()
+
+        for (
+            i in 1 until candles.size
+        ) {
 
             val volume =
-                effectiveQuoteVolume(candles[i])
+                effectiveQuoteVolume(
+                    candles[i]
+                )
 
             obv +=
                 when {
+
                     candles[i].close >
                         candles[i - 1].close ->
                         volume
@@ -1185,7 +1661,8 @@ object AnalysisEngine {
                         candles[i - 1].close ->
                         -volume
 
-                    else -> 0.0
+                    else ->
+                        0.0
                 }
 
             values += obv
@@ -1197,27 +1674,39 @@ object AnalysisEngine {
             }.coerceAtLeast(1.0)
 
         return (
-            (values.last() - values.first()) /
-                denominator
-            ).coerceIn(-1.0, 1.0)
+            (
+                values.last() -
+                    values.first()
+                ) / denominator
+            ).coerceIn(
+                -1.0,
+                1.0
+            )
     }
 
     private fun scoreFrame(
         candles: List<Candle>
     ): Int {
 
-        if (candles.size < 25) return 50
+        if (candles.size < 25) {
+            return 50
+        }
 
         val x =
-            candles.map { it.close }
+            candles.map {
+                it.close
+            }
 
-        val last = x.last()
+        val last =
+            x.last()
 
         val ma20 =
-            x.takeLast(20).average()
+            x.takeLast(20)
+                .average()
 
         val ma10 =
-            x.takeLast(10).average()
+            x.takeLast(10)
+                .average()
 
         val ret =
             last /
@@ -1226,11 +1715,22 @@ object AnalysisEngine {
 
         return (
             50 +
-                if (last > ma20) 15 else -15 +
-                if (ma10 > ma20) 15 else -15 +
-                (ret.coerceIn(-0.15, 0.15) * 100)
-                    .roundToInt()
-            ).coerceIn(0, 100)
+                if (
+                    last > ma20
+                ) 15 else -15 +
+                if (
+                    ma10 > ma20
+                ) 15 else -15 +
+                (
+                    ret.coerceIn(
+                        -0.15,
+                        0.15
+                    ) * 100
+                    ).roundToInt()
+            ).coerceIn(
+                0,
+                100
+            )
     }
 
     private fun resample(
@@ -1238,14 +1738,18 @@ object AnalysisEngine {
         days: Int
     ): List<Candle> {
 
-        if (days == 1) return source
+        if (days == 1) {
+            return source
+        }
 
         val result =
             mutableListOf<Candle>()
 
         var index = 0
 
-        while (index < source.size) {
+        while (
+            index < source.size
+        ) {
 
             val end =
                 min(
@@ -1254,13 +1758,26 @@ object AnalysisEngine {
                 )
 
             val group =
-                source.subList(index, end)
+                source.subList(
+                    index,
+                    end
+                )
 
             result += Candle(
-                close = group.last().close,
-                high = group.maxOf { it.high },
-                low = group.minOf { it.low },
-                volume = group.sumOf { it.volume },
+                close =
+                    group.last().close,
+                high =
+                    group.maxOf {
+                        it.high
+                    },
+                low =
+                    group.minOf {
+                        it.low
+                    },
+                volume =
+                    group.sumOf {
+                        it.volume
+                    },
                 quoteVolume =
                     group.sumOf {
                         effectiveQuoteVolume(it)
@@ -1280,14 +1797,21 @@ object AnalysisEngine {
     ): StructureResult {
 
         if (candles.size < 40) {
+
             return StructureResult(
                 50,
                 "NEUTRAL",
                 false,
                 false,
-                candles.minOf { it.low },
-                candles.maxOf { it.high },
-                listOf("داده ساختار کافی نیست")
+                candles.minOf {
+                    it.low
+                },
+                candles.maxOf {
+                    it.high
+                },
+                listOf(
+                    "داده ساختار کافی نیست"
+                )
             )
         }
 
@@ -1298,49 +1822,89 @@ object AnalysisEngine {
             recent
                 .dropLast(3)
                 .takeLast(20)
-                .minOf { it.low }
+                .minOf {
+                    it.low
+                }
 
         val resistance =
             recent
                 .dropLast(3)
                 .takeLast(20)
-                .maxOf { it.high }
+                .maxOf {
+                    it.high
+                }
 
         val last =
             recent.last().close
 
         val atr =
-            atr(candles, 14)
+            atr(
+                candles,
+                14
+            )
 
         val breakout =
-            last > resistance + atr * 0.15
+            last >
+                resistance +
+                    atr * 0.15
 
         val breakdown =
-            last < support - atr * 0.15
+            last <
+                support -
+                    atr * 0.15
 
         val score =
             when {
-                breakout -> 88
-                breakdown -> 18
-                last > resistance * 0.985 -> 72
-                last < support * 1.015 -> 28
-                else -> 50
+
+                breakout ->
+                    88
+
+                breakdown ->
+                    18
+
+                last >
+                    resistance * 0.985 ->
+                    72
+
+                last <
+                    support * 1.015 ->
+                    28
+
+                else ->
+                    50
             }
 
         val label =
             when {
-                breakout -> "BREAKOUT"
-                breakdown -> "BREAKDOWN"
-                else -> "RANGE"
+
+                breakout ->
+                    "BREAKOUT"
+
+                breakdown ->
+                    "BREAKDOWN"
+
+                else ->
+                    "RANGE"
             }
 
         val reasons =
             if (breakout) {
-                listOf("شکست مقاومت")
+
+                listOf(
+                    "شکست مقاومت"
+                )
+
             } else if (breakdown) {
-                listOf("شکست حمایت")
+
+                listOf(
+                    "شکست حمایت"
+                )
+
             } else {
-                listOf("قیمت داخل محدوده ساختار است")
+
+                listOf(
+                    "قیمت داخل محدوده ساختار است"
+                )
             }
 
         return StructureResult(
@@ -1359,6 +1923,7 @@ object AnalysisEngine {
     ): DivergenceResult {
 
         if (candles.size < 50) {
+
             return DivergenceResult(
                 50,
                 "NONE",
@@ -1376,21 +1941,27 @@ object AnalysisEngine {
 
         val p1 =
             data.take(half)
-                .map { it.close }
+                .map {
+                    it.close
+                }
                 .average()
 
         val p2 =
             data.takeLast(half)
-                .map { it.close }
+                .map {
+                    it.close
+                }
                 .average()
 
         val r1 =
-            rsiSeries(data.take(half))
-                .average()
+            rsiSeries(
+                data.take(half)
+            ).average()
 
         val r2 =
-            rsiSeries(data.takeLast(half))
-                .average()
+            rsiSeries(
+                data.takeLast(half)
+            ).average()
 
         val bullish =
             p2 < p1 &&
@@ -1401,13 +1972,16 @@ object AnalysisEngine {
                 r2 < r1 - 2.5
 
         return when {
+
             bullish ->
                 DivergenceResult(
                     68,
                     "BULLISH",
                     true,
                     false,
-                    listOf("واگرایی مثبت تقریبی قیمت/RSI")
+                    listOf(
+                        "واگرایی مثبت تقریبی قیمت/RSI"
+                    )
                 )
 
             bearish ->
@@ -1416,7 +1990,9 @@ object AnalysisEngine {
                     "BEARISH",
                     false,
                     true,
-                    listOf("واگرایی منفی تقریبی قیمت/RSI")
+                    listOf(
+                        "واگرایی منفی تقریبی قیمت/RSI"
+                    )
                 )
 
             else ->
@@ -1425,7 +2001,9 @@ object AnalysisEngine {
                     "NONE",
                     false,
                     false,
-                    listOf("واگرایی مهمی دیده نشد")
+                    listOf(
+                        "واگرایی مهمی دیده نشد"
+                    )
                 )
         }
     }
@@ -1435,36 +2013,52 @@ object AnalysisEngine {
     ): List<Double> {
 
         val x =
-            candles.map { it.close }
+            candles.map {
+                it.close
+            }
 
-        if (x.size < 16) return listOf(50.0)
+        if (x.size < 16) {
+            return listOf(50.0)
+        }
 
         val result =
             mutableListOf<Double>()
 
-        for (i in 15 until x.size) {
+        for (
+            i in 15 until x.size
+        ) {
 
             var gain = 0.0
             var loss = 0.0
 
-            for (j in i - 13..i) {
+            for (
+                j in i - 13..i
+            ) {
 
                 val d =
-                    x[j] - x[j - 1]
+                    x[j] -
+                        x[j - 1]
 
-                if (d >= 0) gain += d
-                else loss -= d
+                if (d >= 0) {
+                    gain += d
+                } else {
+                    loss -= d
+                }
             }
 
             result +=
                 if (loss == 0.0) {
+
                     100.0
+
                 } else {
+
                     val rs =
                         (gain / 14) /
                             (loss / 14)
 
-                    100 - 100 / (1 + rs)
+                    100 -
+                        100 / (1 + rs)
                 }
         }
 
@@ -1476,15 +2070,20 @@ object AnalysisEngine {
     ): BtcRegime {
 
         if (candles.size < 60) {
+
             return BtcRegime(
                 50,
                 "UNKNOWN",
-                listOf("داده BTC کافی نیست")
+                listOf(
+                    "داده BTC کافی نیست"
+                )
             )
         }
 
         val x =
-            candles.map { it.close }
+            candles.map {
+                it.close
+            }
 
         val last =
             x.last()
@@ -1501,39 +2100,54 @@ object AnalysisEngine {
                 1
 
         var score = 50
-        val reasons = mutableListOf<String>()
+
+        val reasons =
+            mutableListOf<String>()
 
         if (last > e20) {
             score += 10
-            reasons += "BTC بالای EMA20"
+            reasons +=
+                "BTC بالای EMA20"
         } else {
             score -= 10
         }
 
         if (e20 > e50) {
             score += 12
-            reasons += "BTC روند میان‌مدت صعودی"
+            reasons +=
+                "BTC روند میان‌مدت صعودی"
         } else {
             score -= 12
         }
 
         if (ret > 0.05) {
             score += 10
-            reasons += "مومنتوم BTC مثبت"
+            reasons +=
+                "مومنتوم BTC مثبت"
         } else if (ret < -0.05) {
             score -= 10
-            reasons += "مومنتوم BTC منفی"
+            reasons +=
+                "مومنتوم BTC منفی"
         }
 
         val label =
             when {
-                score >= 68 -> "RISK-ON"
-                score <= 32 -> "RISK-OFF"
-                else -> "NEUTRAL"
+
+                score >= 68 ->
+                    "RISK-ON"
+
+                score <= 32 ->
+                    "RISK-OFF"
+
+                else ->
+                    "NEUTRAL"
             }
 
         return BtcRegime(
-            score.coerceIn(0, 100),
+            score.coerceIn(
+                0,
+                100
+            ),
             label,
             reasons
         )
@@ -1557,72 +2171,118 @@ object AnalysisEngine {
         val last =
             candles.last().close
 
-        val atr =
-            atr(candles, 14)
+        val atrValue =
+            atr(
+                candles,
+                14
+            )
 
-        if (signal.contains("BUY")) {
+        if (atrValue <= 0) {
+            return null
+        }
+
+        if (
+            signal == "BUY" ||
+            signal == "STRONG BUY"
+        ) {
 
             val entryLow =
                 max(
                     structure.support,
-                    last - atr * 0.75
+                    last -
+                        atrValue * 0.75
                 )
 
             val entryHigh =
                 min(
-                    last + atr * 0.15,
+                    last +
+                        atrValue * 0.15,
                     last * 1.02
                 )
 
             val sl =
                 min(
-                    structure.support - atr * 0.20,
-                    last - atr * 1.25
+                    structure.support -
+                        atrValue * 0.20,
+                    last -
+                        atrValue * 1.25
                 )
 
             val risk =
-                (last - sl)
-                    .coerceAtLeast(atr * 0.5)
+                (
+                    last - sl
+                    ).coerceAtLeast(
+                        atrValue * 0.5
+                    )
+
+            val tp1 =
+                last +
+                    risk * 1.5
+
+            val tp2 =
+                last +
+                    risk * 2.5
 
             return TradePlan(
-                entryLow,
-                entryHigh,
-                sl,
-                last + risk * 1.5,
-                last + risk * 2.5,
-                2.0
+                entryLow =
+                    entryLow,
+                entryHigh =
+                    entryHigh,
+                stopLoss =
+                    sl,
+                tp1 =
+                    tp1,
+                tp2 =
+                    tp2,
+                riskReward =
+                    2.0
             )
         }
 
         val entryLow =
             max(
-                last - atr * 0.15,
+                last -
+                    atrValue * 0.15,
                 last * 0.98
             )
 
         val entryHigh =
             min(
                 structure.resistance,
-                last + atr * 0.75
+                last +
+                    atrValue * 0.75
             )
 
         val sl =
             max(
-                structure.resistance + atr * 0.20,
-                last + atr * 1.25
+                structure.resistance +
+                    atrValue * 0.20,
+                last +
+                    atrValue * 1.25
             )
 
         val risk =
-            (sl - last)
-                .coerceAtLeast(atr * 0.5)
+            (
+                sl - last
+                ).coerceAtLeast(
+                    atrValue * 0.5
+                )
 
         return TradePlan(
-            entryLow,
-            entryHigh,
-            sl,
-            last - risk * 1.5,
-            last - risk * 2.5,
-            2.0
+            entryLow =
+                entryLow,
+            entryHigh =
+                entryHigh,
+            stopLoss =
+                sl,
+            tp1 =
+                last -
+                    risk * 1.5,
+            tp2 =
+                last -
+                    risk * 2.5,
+            riskReward =
+                2.0
         )
     }
 
@@ -1631,15 +2291,22 @@ object AnalysisEngine {
         period: Int
     ): Double {
 
-        if (candles.size < 2) return 0.0
+        if (candles.size < 2) {
+            return 0.0
+        }
 
         val start =
-            maxOf(1, candles.size - period)
+            maxOf(
+                1,
+                candles.size - period
+            )
 
         val ranges =
             mutableListOf<Double>()
 
-        for (i in start until candles.size) {
+        for (
+            i in start until candles.size
+        ) {
 
             val current =
                 candles[i]
@@ -1649,13 +2316,23 @@ object AnalysisEngine {
 
             ranges +=
                 maxOf(
-                    current.high - current.low,
-                    abs(current.high - previous),
-                    abs(current.low - previous)
+                    current.high -
+                        current.low,
+
+                    abs(
+                        current.high -
+                            previous
+                    ),
+
+                    abs(
+                        current.low -
+                            previous
+                    )
                 )
         }
 
-        return ranges.average()
+        return ranges
+            .average()
             .coerceAtLeast(1e-9)
     }
 
@@ -1665,20 +2342,32 @@ object AnalysisEngine {
     ): Double {
 
         val n =
-            minOf(period, values.size)
+            minOf(
+                period,
+                values.size
+            )
 
-        if (n <= 0) return 0.0
+        if (n <= 0) {
+            return 0.0
+        }
 
         val k =
-            2.0 / (n + 1)
+            2.0 /
+                (n + 1)
 
         var result =
-            values.take(n).average()
+            values
+                .take(n)
+                .average()
 
-        for (i in n until values.size) {
+        for (
+            i in n until values.size
+        ) {
+
             result =
                 values[i] * k +
-                    result * (1 - k)
+                    result *
+                    (1 - k)
         }
 
         return result
