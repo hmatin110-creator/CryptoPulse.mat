@@ -118,13 +118,6 @@ class MarketScanner {
             return@withContext emptyScanResult()
         }
 
-        /*
-         * مرحله اول:
-         * تحلیل تکنیکال سبک روی کل بازار.
-         *
-         * این بخش عمداً بدون تغییر نگه داشته شده تا
-         * فیلتر اولیه فعلی همان عملکرد قبلی را داشته باشد.
-         */
         val technicalLimiter = Semaphore(10)
 
         val technicalCandidates = coroutineScope {
@@ -171,9 +164,6 @@ class MarketScanner {
             )
         }
 
-        /*
-         * فیلتر اولیه فعلی دست‌نخورده است.
-         */
         val technicalShortlist =
             technicalCandidates
                 .filter {
@@ -202,19 +192,12 @@ class MarketScanner {
             )
         }
 
-        /*
-         * Top 100 بر اساس حجم معاملات Binance.
-         */
         val top100Symbols =
             universe
                 .take(100)
                 .map { it.first }
                 .toSet()
 
-        /*
-         * مرحله دوم:
-         * تحلیل کامل فقط روی کاندیداهای فیلترشده.
-         */
         val enrichLimiter = Semaphore(5)
 
         val enrichedCandidates =
@@ -282,40 +265,11 @@ class MarketScanner {
             )
         }
 
-        /*
-         * فقط BUY و STRONG BUY.
-         *
-         * علاوه بر سیگنال اصلی AnalysisEngine،
-         * معیارهای 1D/2D/3D نیز برای جلوگیری از ورود
-         * پول ضعیف یا خروج سنگین بررسی می‌شوند.
-         */
         val buyCandidates =
             enrichedCandidates.filter {
                 isBuySignal(it.result)
             }
 
-        /*
-         * Top 10 کل بازار.
-         *
-         * رتبه‌بندی بر اساس ترکیب:
-         * - امتیاز نهایی تحلیل
-         * - اعتماد تحلیل
-         * - قدرت حرکت
-         * - ورود پول 1D/2D/3D
-         * - اخبار
-         * - ساختار
-         * - واگرایی
-         * - ورود سنگین پول 1D/2D/3D
-         * - ورود غیرطبیعی پول 1D/2D/3D
-         * - OI
-         * - Funding
-         * - Long/Short
-         * - Taker Volume
-         * - وضعیت BTC
-         * - Pump / Dump
-         *
-         * بنابراین رتبه‌بندی فقط بر اساس Money Flow نیست.
-         */
         val top10All =
             buyCandidates
                 .sortedWith(
@@ -327,9 +281,6 @@ class MarketScanner {
                 )
                 .take(10)
 
-        /*
-         * Top 10 از بین 100 ارز اول بازار.
-         */
         val top10Top100 =
             buyCandidates
                 .filter {
@@ -355,6 +306,7 @@ class MarketScanner {
     private fun parseTradableUsdtSymbols(
         raw: String
     ): Set<String> {
+
         val result = HashSet<String>()
 
         val root = runCatching {
@@ -368,6 +320,7 @@ class MarketScanner {
                 ?: return emptySet()
 
         for (i in 0 until symbols.length()) {
+
             val obj =
                 symbols.optJSONObject(i)
                     ?: continue
@@ -410,6 +363,7 @@ class MarketScanner {
             mutableListOf<Pair<String, Double>>()
 
         for (i in 0 until tickers.length()) {
+
             val obj =
                 tickers.optJSONObject(i)
                     ?: continue
@@ -433,8 +387,7 @@ class MarketScanner {
             if (!quoteVolume.isFinite()) continue
             if (quoteVolume <= 0.0) continue
 
-            symbols +=
-                symbol to quoteVolume
+            symbols += symbol to quoteVolume
         }
 
         return symbols
@@ -499,18 +452,6 @@ class MarketScanner {
         )
     }
 
-    /*
-     * رتبه‌بندی نهایی.
-     *
-     * سه معیار پول:
-     * recentMoneyFlowScore
-     * recentHeavyInflowPeriods
-     * recentUnusualInflowPeriods
-     *
-     * فقط 1D + 2D + 3D را بررسی می‌کنند.
-     *
-     * سایر مؤلفه‌ها از کل AnalysisResult استفاده می‌کنند.
-     */
     private fun fullRankingScore(
         result: AnalysisResult
     ): Double {
@@ -536,10 +477,6 @@ class MarketScanner {
         val divergence =
             result.divergence.score.coerceIn(0, 100)
 
-        /*
-         * Money Flow:
-         * فقط 1D/2D/3D
-         */
         val recentMoney =
             recentMoneyFlowScore(result)
 
@@ -552,34 +489,12 @@ class MarketScanner {
         val recentHeavyOutflow =
             recentHeavyOutflowPeriods(result)
 
-        /*
-         * BTC regime
-         */
         val btcScore =
             btcRegimeScore(result)
 
-        /*
-         * OI / Funding / Long-Short / Taker
-         */
         val derivativeScore =
             derivativeMarketScore(result)
 
-        /*
-         * Pump خوب است، Dump بالا امتیاز را کاهش می‌دهد.
-         */
-        val pumpScore =
-            pump
-
-        val dumpPenalty =
-            dump * 0.35
-
-        /*
-         * ورود سنگین پول:
-         *
-         * 3 دوره = +10
-         * 2 دوره = +7
-         * 1 دوره = +3
-         */
         val heavyBonus =
             when {
                 recentHeavyInflow >= 3 -> 10.0
@@ -588,11 +503,6 @@ class MarketScanner {
                 else -> 0.0
             }
 
-        /*
-         * ورود غیرطبیعی:
-         *
-         * هر دوره جداگانه بررسی می‌شود.
-         */
         val unusualBonus =
             when {
                 recentUnusualInflow >= 3 -> 8.0
@@ -601,10 +511,6 @@ class MarketScanner {
                 else -> 0.0
             }
 
-        /*
-         * خروج سنگین پول در 1D/2D/3D
-         * مستقیماً از رتبه کم می‌کند.
-         */
         val heavyOutflowPenalty =
             when {
                 recentHeavyOutflow >= 3 -> 14.0
@@ -613,27 +519,10 @@ class MarketScanner {
                 else -> 0.0
             }
 
-        /*
-         * وزن اصلی:
-         *
-         * Analysis Score      28%
-         * Confidence          14%
-         * Pump                8%
-         * Money Flow 3D       12%
-         * News                8%
-         * Structure           6%
-         * Divergence          6%
-         * BTC Regime          5%
-         * Derivatives         8%
-         * Dump penalty        جداگانه
-         *
-         * سپس Bonus/Penalty مربوط به
-         * Heavy/Unusual/Outflow اعمال می‌شود.
-         */
         val baseScore =
             score * 0.28 +
             confidence * 0.14 +
-            pumpScore * 0.08 +
+            pump * 0.08 +
             recentMoney * 0.12 +
             newsScore * 0.08 +
             structure * 0.06 +
@@ -646,16 +535,10 @@ class MarketScanner {
             heavyBonus +
             unusualBonus -
             heavyOutflowPenalty -
-            dumpPenalty * 0.20
+            dump * 0.20
         ).coerceIn(0.0, 100.0)
     }
 
-    /*
-     * فقط BUY و STRONG BUY.
-     *
-     * معیار پول همچنان فقط:
-     * 1D + 2D + 3D
-     */
     private fun isBuySignal(
         result: AnalysisResult
     ): Boolean {
@@ -685,19 +568,10 @@ class MarketScanner {
         val recentHeavyOutflow =
             recentHeavyOutflowPeriods(result)
 
-        /*
-         * حداقل دو دوره خروج سنگین:
-         * کاندیدا حذف می‌شود.
-         */
         if (recentHeavyOutflow >= 2) {
             return false
         }
 
-        /*
-         * STRONG BUY:
-         * پول قوی + حداقل دو دوره ورود سنگین
-         * + حداقل یک ورود غیرطبیعی.
-         */
         if (engineSignal == "STRONG BUY") {
             return (
                 recentMoney >= 58.0 &&
@@ -706,11 +580,6 @@ class MarketScanner {
             )
         }
 
-        /*
-         * BUY:
-         * پول مناسب و حداقل یکی از
-         * Heavy یا Unusual.
-         */
         return (
             recentMoney >= 50.0 &&
             (
@@ -720,15 +589,6 @@ class MarketScanner {
         )
     }
 
-    /*
-     * امتیاز ورود پول:
-     *
-     * 1D وزن 1.0
-     * 2D وزن 0.8
-     * 3D وزن 0.6
-     *
-     * هیچ دوره دیگری وارد این امتیاز نمی‌شود.
-     */
     private fun recentMoneyFlowScore(
         result: AnalysisResult
     ): Double {
@@ -753,9 +613,7 @@ class MarketScanner {
             weight: Double
         ) {
 
-            if (period == null) {
-                return
-            }
+            if (period == null) return
 
             val inflow =
                 period.inflowUsd
@@ -801,10 +659,6 @@ class MarketScanner {
         ).coerceIn(0.0, 100.0)
     }
 
-    /*
-     * Heavy inflow:
-     * هر کدام از 1D/2D/3D جداگانه.
-     */
     private fun recentHeavyInflowPeriods(
         result: AnalysisResult
     ): Int {
@@ -816,10 +670,6 @@ class MarketScanner {
             }
     }
 
-    /*
-     * Unusual inflow:
-     * هر کدام از 1D/2D/3D جداگانه.
-     */
     private fun recentUnusualInflowPeriods(
         result: AnalysisResult
     ): Int {
@@ -830,10 +680,6 @@ class MarketScanner {
             }
     }
 
-    /*
-     * Heavy outflow:
-     * هر کدام از 1D/2D/3D جداگانه.
-     */
     private fun recentHeavyOutflowPeriods(
         result: AnalysisResult
     ): Int {
@@ -845,9 +691,6 @@ class MarketScanner {
             }
     }
 
-    /*
-     * فقط سه دوره اخیر.
-     */
     private fun recentPeriods(
         result: AnalysisResult
     ): List<MoneyFlowPeriod> {
@@ -863,51 +706,33 @@ class MarketScanner {
     }
 
     /*
-     * تبدیل وضعیت BTC به یک امتیاز قابل استفاده
-     * در رتبه‌بندی.
+     * این نسخه به نام enumهای BtcRegime
+     * وابسته نیست و با مقدار واقعی پروژه کار می‌کند.
      */
     private fun btcRegimeScore(
         result: AnalysisResult
     ): Double {
 
-        return when (
+        val value =
             result.btcRegime
-        ) {
+                .toString()
+                .trim()
+                .uppercase()
 
-            BtcRegime.BULLISH -> 90.0
-
-            BtcRegime.NEUTRAL -> 50.0
-
-            BtcRegime.BEARISH -> 20.0
-
+        return when {
+            value.contains("BULL") -> 90.0
+            value.contains("BEAR") -> 20.0
             else -> 50.0
         }
     }
 
-    /*
-     * ترکیب داده‌های مشتقه:
-     *
-     * Open Interest
-     * Funding
-     * Long/Short
-     * Taker Volume
-     *
-     * چون ساختار DTOهای پروژه ممکن است در بعضی
-     * نسخه‌ها ناقص باشد، این تابع محافظه‌کارانه
-     * از داده‌های موجود استفاده می‌کند.
-     */
     private fun derivativeMarketScore(
         result: AnalysisResult
     ): Double {
 
-        /*
-         * در صورت وجود امتیاز مشتقه در تحلیل اصلی،
-         * از همان استفاده می‌کنیم.
-         *
-         * در غیر این صورت امتیاز خنثی.
-         */
         val reasons =
-            result.reasons.joinToString(" ")
+            result.reasons
+                .joinToString(" ")
                 .lowercase()
 
         var score = 50.0
