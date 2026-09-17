@@ -126,8 +126,7 @@ private fun CryptoAnalysisScreen() {
 
                 analysisResult = result
 
-                message =
-                    "تحلیل $normalized کامل شد."
+                message = "تحلیل $normalized کامل شد."
 
             } catch (e: Exception) {
 
@@ -184,7 +183,10 @@ private fun CryptoAnalysisScreen() {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(
+                horizontal = 12.dp,
+                vertical = 10.dp
+            ),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
 
@@ -257,7 +259,9 @@ private fun CryptoAnalysisScreen() {
             if (scan.top10All.isEmpty()) {
 
                 item {
-                    EmptyCard("هیچ ارزی با موفقیت تحلیل نشد.")
+                    EmptyCard(
+                        "هیچ ارزی با موفقیت تحلیل نشد."
+                    )
                 }
 
             } else {
@@ -569,6 +573,13 @@ private fun NewsAnalysisCard(
             "🔴 اخبار بسیار منفی"
     }
 
+    val newsEffect =
+        when {
+            result.news >= 70 -> "مثبت"
+            result.news <= 30 -> "منفی"
+            else -> "خنثی"
+        }
+
     TableCard(
         title = "📰 تحلیل اخبار"
     ) {
@@ -612,11 +623,7 @@ private fun NewsAnalysisCard(
             TableDataRow(
                 listOf(
                     "اثر در تصمیم نهایی" to 150.dp,
-                    when {
-                        result.news >= 70 -> "مثبت"
-                        result.news <= 30 -> "منفی"
-                        else -> "خنثی"
-                    } to 190.dp
+                    newsEffect to 190.dp
                 )
             )
         }
@@ -627,6 +634,20 @@ private fun NewsAnalysisCard(
 private fun AnalysisTable(
     result: AnalysisResult
 ) {
+
+    val breakoutText =
+        if (result.structure.breakout) {
+            "بله"
+        } else {
+            "خیر"
+        }
+
+    val breakdownText =
+        if (result.structure.breakdown) {
+            "بله"
+        } else {
+            "خیر"
+        }
 
     TableCard(
         title = "📊 جدول تحلیل بازار"
@@ -656,14 +677,14 @@ private fun AnalysisTable(
             TableDataRow(
                 listOf(
                     "Breakout" to 170.dp,
-                    if (result.structure.breakout) "بله" else "خیر" to 190.dp
+                    breakoutText to 190.dp
                 )
             )
 
             TableDataRow(
                 listOf(
                     "Breakdown" to 170.dp,
-                    if (result.structure.breakdown) "بله" else "خیر" to 190.dp
+                    breakdownText to 190.dp
                 )
             )
 
@@ -772,6 +793,20 @@ private fun MoneyFlowTable(
 
                     val period = entry.value
 
+                    val unusualInflowText =
+                        if (period.unusualInflow > 0) {
+                            "بله (${period.unusualInflow})"
+                        } else {
+                            "خیر"
+                        }
+
+                    val unusualOutflowText =
+                        if (period.unusualOutflow > 0) {
+                            "بله (${period.unusualOutflow})"
+                        } else {
+                            "خیر"
+                        }
+
                     TableDataRow(
                         listOf(
                             period.title to 85.dp,
@@ -780,21 +815,13 @@ private fun MoneyFlowTable(
                                 period.inflowUsd
                             ) to 105.dp,
 
-                            if (period.unusualInflow > 0) {
-                                "بله (${period.unusualInflow})"
-                            } else {
-                                "خیر"
-                            } to 105.dp,
+                            unusualInflowText to 105.dp,
 
                             formatMoney(
                                 period.outflowUsd
                             ) to 105.dp,
 
-                            if (period.unusualOutflow > 0) {
-                                "بله (${period.unusualOutflow})"
-                            } else {
-                                "خیر"
-                            } to 105.dp,
+                            unusualOutflowText to 105.dp,
 
                             formatMoney(
                                 period.netFlowUsd
@@ -817,6 +844,13 @@ private fun MoneyFlowTable(
                 "مقدار" to 190.dp
             )
         ) {
+
+            TableHeaderRow(
+                listOf(
+                    "شاخص" to 170.dp,
+                    "مقدار" to 190.dp
+                )
+            )
 
             TableDataRow(
                 listOf(
@@ -1090,8 +1124,7 @@ private fun CandidateTable(
                         result.moneyFlowDetails.label to 115.dp,
                         "${result.news}" to 70.dp,
                         result.structure.label to 120.dp
-                    ),
-                    boldValue = false
+                    )
                 )
             }
         }
@@ -1101,10 +1134,15 @@ private fun CandidateTable(
 @Composable
 private fun SharedTable(
     columns: List<Pair<String, Dp>>,
-    content: @Composable ColumnScope.() -> Unit
+    content: @Composable () -> Unit
 ) {
 
     val scrollState = rememberScrollState()
+
+    val totalWidth =
+        columns.fold(0.dp) { total, column ->
+            total + column.second
+        }
 
     Box(
         modifier = Modifier
@@ -1113,9 +1151,7 @@ private fun SharedTable(
     ) {
 
         Column(
-            modifier = Modifier.width(
-                columns.sumOf { it.second.value.toDouble() }.dp
-            )
+            modifier = Modifier.width(totalWidth)
         ) {
 
             content()
@@ -1167,7 +1203,7 @@ private fun TableDataRow(
 @Composable
 private fun TableCard(
     title: String,
-    content: @Composable ColumnScope.() -> Unit
+    content: @Composable () -> Unit
 ) {
 
     Card(
