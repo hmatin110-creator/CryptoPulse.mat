@@ -1584,17 +1584,17 @@ object AnalysisEngine {
                     candle.close
 
             else ->
-                0.0
-        }
+    0.0
+}
 
-    private fun cmf(
-        candles: List<Candle
-    ): Double {
+private fun cmf(
+    candles: List<Candle>
+): Double {
 
-        var money = 0.0
-        var volume = 0.0
+    var money = 0.0
+    var volume = 0.0
 
-        candles.forEach { c ->
+    candles.forEach { c ->
 
             val range =
                 (
