@@ -36,10 +36,18 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk CryptoPulse.apk
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.2.${{ github.run_number }}
-          name: CryptoPulse v1.2.${{ github.run_number }}
-          files: CryptoPulse.apk
-          generate_release_notes: true
+          name: CryptoPulse-apk
+          path: CryptoPulse.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.2.${{ github.run_number }}" \
+            CryptoPulse.apk \
+            --title "CryptoPulse v1.2.${{ github.run_number }}" \
+            --generate-notes
