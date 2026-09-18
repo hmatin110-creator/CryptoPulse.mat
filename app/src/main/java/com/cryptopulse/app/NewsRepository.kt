@@ -3,8 +3,6 @@ package com.cryptopulse.app
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
-import org.json.JSONArray
-import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
@@ -28,20 +26,23 @@ class NewsRepository {
 
     private val api =
         Retrofit.Builder()
-            .baseUrl("https://min-api.cryptocompare.com/")
+            .baseUrl("https://news.google.com/")
             .addConverterFactory(MoshiConverterFactory.create())
             .build()
-            .create(CryptoCompareNewsApi::class.java)
+            .create(GoogleNewsApi::class.java)
 
     suspend fun load(symbol: String): NewsSnapshot =
         withContext(Dispatchers.IO) {
 
             val asset = normalizeAsset(symbol)
+            val searchTerms = buildSearchTerms(asset)
 
             val raw = runCatching {
-                api.news(
-                    lang = "EN",
-                    limit = 100
+                api.search(
+                    query = searchTerms,
+                    language = "en-US",
+                    country = "US",
+                    edition = "US:en"
                 ).string()
             }.getOrElse {
                 return@withContext emptySnapshot()
@@ -51,7 +52,7 @@ class NewsRepository {
                 return@withContext emptySnapshot()
             }
 
-            val articles = parseArticles(raw)
+            val articles = parseRss(raw)
 
             if (articles.isEmpty()) {
                 return@withContext emptySnapshot()
@@ -59,7 +60,7 @@ class NewsRepository {
 
             val aliases = buildAliases(asset)
 
-            val relevant = articles
+            val selected = articles
                 .map { item ->
                     item.copy(
                         relevance = calculateRelevance(
@@ -78,44 +79,16 @@ class NewsRepository {
                 }
                 .take(5)
 
-            val selected =
-                if (relevant.isNotEmpty()) {
-                    relevant
-                } else {
-                    articles
-                        .map { item ->
-                            item.copy(
-                                relevance = genericRelevance(item)
-                            )
-                        }
-                        .filter { it.relevance > 0.0 }
-                        .sortedWith(
-                            compareByDescending<NewsItem> { it.relevance }
-                                .thenByDescending {
-                                    sentimentWeight(it.sentiment)
-                                }
-                        )
-                        .distinctBy {
-                            it.title.trim().lowercase()
-                        }
-                        .take(5)
-                }
-
             if (selected.isEmpty()) {
                 return@withContext emptySnapshot()
             }
 
             val score = calculateNewsScore(selected)
 
-            val confidence =
-                if (relevant.isNotEmpty()) {
-                    calculateConfidence(
-                        totalArticles = articles.size,
-                        selectedArticles = selected.size
-                    )
-                } else {
-                    35
-                }
+            val confidence = calculateConfidence(
+                totalArticles = articles.size,
+                selectedArticles = selected.size
+            )
 
             NewsSnapshot(
                 score = score,
@@ -124,78 +97,210 @@ class NewsRepository {
             )
         }
 
-    private fun parseArticles(raw: String): List<NewsItem> {
+    private fun buildSearchTerms(asset: String): String {
 
-        return runCatching {
+        return when (asset) {
 
-            val root = JSONObject(raw)
+            "BTC" ->
+                "Bitcoin crypto"
 
-            val data =
-                root.optJSONArray("Data")
-                    ?: root.optJSONArray("data")
-                    ?: JSONArray()
+            "ETH" ->
+                "Ethereum crypto"
 
-            val result = mutableListOf<NewsItem>()
+            "BNB" ->
+                "BNB Binance crypto"
 
-            for (i in 0 until data.length()) {
+            "SOL" ->
+                "Solana crypto"
 
-                val obj = data.optJSONObject(i)
-                    ?: continue
+            "XRP" ->
+                "XRP Ripple crypto"
 
-                val title =
-                    obj.optString("title")
-                        .ifBlank {
-                            obj.optString("TITLE")
-                        }
-                        .trim()
+            "ADA" ->
+                "Cardano ADA crypto"
 
-                if (title.isBlank()) {
-                    continue
-                }
+            "DOGE" ->
+                "Dogecoin DOGE crypto"
 
-                val source =
-                    obj.optString("source")
-                        .ifBlank {
-                            obj.optString("SOURCE")
-                        }
-                        .ifBlank {
-                            obj.optString("source_info")
-                        }
-                        .trim()
+            "TRX" ->
+                "TRON TRX crypto"
 
-                val url =
-                    obj.optString("url")
-                        .ifBlank {
-                            obj.optString("URL")
-                        }
-                        .trim()
+            "AVAX" ->
+                "Avalanche AVAX crypto"
 
-                val description =
-                    obj.optString("body")
-                        .ifBlank {
-                            obj.optString("BODY")
-                        }
-                        .ifBlank {
-                            obj.optString("description")
-                        }
-                        .trim()
+            "LINK" ->
+                "Chainlink LINK crypto"
 
-                val text = "$title $description"
+            "DOT" ->
+                "Polkadot DOT crypto"
 
-                result += NewsItem(
-                    title = title,
-                    source = source.ifBlank { "CryptoCompare" },
-                    url = url,
-                    sentiment = detectSentiment(text),
-                    relevance = 0.0
-                )
+            "MATIC", "POL" ->
+                "Polygon MATIC POL crypto"
+
+            "LTC" ->
+                "Litecoin LTC crypto"
+
+            "BCH" ->
+                "Bitcoin Cash BCH crypto"
+
+            "UNI" ->
+                "Uniswap UNI crypto"
+
+            "ATOM" ->
+                "Cosmos ATOM crypto"
+
+            "NEAR" ->
+                "NEAR Protocol crypto"
+
+            "APT" ->
+                "Aptos APT crypto"
+
+            "ARB" ->
+                "Arbitrum ARB crypto"
+
+            "OP" ->
+                "Optimism OP crypto"
+
+            "SUI" ->
+                "Sui crypto"
+
+            "TON" ->
+                "Toncoin TON crypto"
+
+            "SHIB" ->
+                "Shiba Inu SHIB crypto"
+
+            "PEPE" ->
+                "PEPE crypto"
+
+            "FIL" ->
+                "Filecoin FIL crypto"
+
+            "AAVE" ->
+                "Aave crypto"
+
+            "MKR" ->
+                "Maker MKR crypto"
+
+            "INJ" ->
+                "Injective INJ crypto"
+
+            "RUNE" ->
+                "THORChain RUNE crypto"
+
+            "IMX" ->
+                "Immutable IMX crypto"
+
+            "SEI" ->
+                "SEI crypto"
+
+            "TIA" ->
+                "Celestia TIA crypto"
+
+            "WIF" ->
+                "dogwifhat WIF crypto"
+
+            "BONK" ->
+                "BONK crypto"
+
+            else ->
+                "$asset crypto"
+        }
+    }
+
+    private fun parseRss(raw: String): List<NewsItem> {
+
+        val result = mutableListOf<NewsItem>()
+
+        val itemRegex = Regex(
+            pattern = "<item>(.*?)</item>",
+            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+
+        val titleRegex = Regex(
+            "<title>(.*?)</title>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+
+        val linkRegex = Regex(
+            "<link>(.*?)</link>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+
+        val sourceRegex = Regex(
+            "<source[^>]*>(.*?)</source>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+
+        val descriptionRegex = Regex(
+            "<description>(.*?)</description>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+
+        itemRegex.findAll(raw).forEach { match ->
+
+            val block = match.groupValues.getOrNull(1)
+                ?: return@forEach
+
+            val title = titleRegex
+                .find(block)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let(::cleanText)
+                .orEmpty()
+
+            if (title.isBlank()) {
+                return@forEach
             }
 
-            result
+            val link = linkRegex
+                .find(block)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let(::cleanText)
+                .orEmpty()
 
-        }.getOrElse {
-            emptyList()
+            val source = sourceRegex
+                .find(block)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let(::cleanText)
+                .orEmpty()
+
+            val description = descriptionRegex
+                .find(block)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let(::cleanText)
+                .orEmpty()
+
+            result += NewsItem(
+                title = title,
+                source = source.ifBlank { "Google News" },
+                url = link,
+                sentiment = detectSentiment("$title $description"),
+                relevance = 0.0
+            )
         }
+
+        return result
+    }
+
+    private fun cleanText(value: String): String {
+
+        return value
+            .replace("<![CDATA[", "")
+            .replace("]]>", "")
+            .replace(Regex("<[^>]*>"), " ")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun normalizeAsset(symbol: String): String {
@@ -244,8 +349,8 @@ class NewsRepository {
 
             "BNB" -> {
                 result += "bnb"
-                result += "binance coin"
                 result += "binance"
+                result += "binance coin"
             }
 
             "SOL" -> {
@@ -415,6 +520,7 @@ class NewsRepository {
         var score = 0.0
 
         aliases.forEach { alias ->
+
             if (text.contains(alias)) {
                 score += 10.0
             }
@@ -422,39 +528,6 @@ class NewsRepository {
 
         if (score >= 10.0) {
             score += 10.0
-        }
-
-        return score
-    }
-
-    private fun genericRelevance(item: NewsItem): Double {
-
-        val text = item.title.lowercase()
-
-        val keywords = listOf(
-            "crypto",
-            "cryptocurrency",
-            "bitcoin",
-            "ethereum",
-            "blockchain",
-            "digital asset",
-            "digital assets",
-            "token",
-            "defi",
-            "stablecoin",
-            "exchange",
-            "etf",
-            "sec",
-            "fed",
-            "interest rate"
-        )
-
-        var score = 0.0
-
-        keywords.forEach { keyword ->
-            if (text.contains(keyword)) {
-                score += 1.0
-            }
         }
 
         return score
@@ -514,29 +587,30 @@ class NewsRepository {
             "liquidation"
         )
 
-        var positiveCount = 0
-        var negativeCount = 0
+        var positive = 0
+        var negative = 0
 
         bullish.forEach {
             if (value.contains(it)) {
-                positiveCount++
+                positive++
             }
         }
 
         bearish.forEach {
             if (value.contains(it)) {
-                negativeCount++
+                negative++
             }
         }
 
         return when {
-            positiveCount > negativeCount -> 100
-            negativeCount > positiveCount -> -100
+            positive > negative -> 100
+            negative > positive -> -100
             else -> 0
         }
     }
 
     private fun sentimentWeight(sentiment: Int): Int {
+
         return when {
             sentiment > 0 -> 2
             sentiment < 0 -> 1
@@ -556,6 +630,7 @@ class NewsRepository {
         var negative = 0
 
         items.forEach {
+
             when {
                 it.sentiment > 0 -> positive++
                 it.sentiment < 0 -> negative++
@@ -598,6 +673,7 @@ class NewsRepository {
     }
 
     private fun emptySnapshot(): NewsSnapshot {
+
         return NewsSnapshot(
             score = 50,
             confidence = 0,
@@ -606,11 +682,13 @@ class NewsRepository {
     }
 }
 
-private interface CryptoCompareNewsApi {
+private interface GoogleNewsApi {
 
-    @GET("data/v2/news/")
-    suspend fun news(
-        @Query("lang") lang: String,
-        @Query("limit") limit: Int
+    @GET("rss/search")
+    suspend fun search(
+        @Query("q") query: String,
+        @Query("hl") language: String,
+        @Query("gl") country: String,
+        @Query("ceid") edition: String
     ): ResponseBody
 }
