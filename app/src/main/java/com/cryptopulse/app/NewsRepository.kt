@@ -2,28 +2,26 @@ package com.cryptopulse.app
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Query
-import okhttp3.ResponseBody
-import java.util.Locale
-
-data class NewsSnapshot(
-    val score: Int,
-    val confidence: Int,
-    val items: List<NewsItem> = emptyList()
-)
 
 data class NewsItem(
     val title: String,
     val source: String,
-    val url: String = "",
-    val publishedAt: Long = 0L,
-    val relevance: Int = 0,
-    val sentiment: Int = 0
+    val url: String,
+    val sentiment: String,
+    val relevance: Double
+)
+
+data class NewsSnapshot(
+    val score: Int,
+    val confidence: Int,
+    val items: List<NewsItem>
 )
 
 class NewsRepository {
@@ -31,718 +29,526 @@ class NewsRepository {
     private val api =
         Retrofit.Builder()
             .baseUrl("https://min-api.cryptocompare.com/")
-            .addConverterFactory(
-                MoshiConverterFactory.create()
-            )
+            .addConverterFactory(MoshiConverterFactory.create())
             .build()
             .create(CryptoCompareNewsApi::class.java)
 
-    suspend fun load(
-        symbol: String
-    ): NewsSnapshot =
+    suspend fun load(symbol: String): NewsSnapshot =
         withContext(Dispatchers.IO) {
 
-            val cleanSymbol =
-                normalizeSymbol(symbol)
+            val baseAsset = normalizeAsset(symbol)
 
-            val baseAsset =
-                cleanSymbol
-                    .removeSuffix("USDT")
-                    .removeSuffix("USD")
-
-            if (baseAsset.isBlank()) {
-                return@withContext neutralSnapshot()
+            val raw = runCatching {
+                api.news(
+                    lang = "EN",
+                    limit = 100
+                ).string()
+            }.getOrElse {
+                return@withContext emptySnapshot()
             }
-
-            val response =
-                runCatching {
-                    api.news(
-                        lang = "EN",
-                        limit = 50
-                    )
-                }.getOrElse {
-                    return@withContext neutralSnapshot()
-                }
-
-            val raw =
-                runCatching {
-                    response.string()
-                }.getOrDefault("")
 
             if (raw.isBlank()) {
-                return@withContext neutralSnapshot()
+                return@withContext emptySnapshot()
             }
 
-            val root =
-                runCatching {
-                    JSONArray(raw)
-                }.getOrElse {
-                    return@withContext neutralSnapshot()
-                }
+            val articles = parseArticles(raw)
 
-            val aliases =
-                buildAliases(baseAsset)
+            if (articles.isEmpty()) {
+                return@withContext emptySnapshot()
+            }
 
-            val parsed =
-                mutableListOf<NewsItem>()
+            val aliases = buildAliases(baseAsset)
 
-            val seen =
-                HashSet<String>()
-
-            for (i in 0 until root.length()) {
-
-                val obj =
-                    root.optJSONObject(i)
-                        ?: continue
-
-                val title =
-                    obj.optString("title")
-                        .trim()
-
-                if (title.isBlank()) {
-                    continue
-                }
-
-                val source =
-                    obj.optString("source")
-                        .trim()
-                        .ifBlank {
-                            obj.optString("source_info")
-                                .trim()
-                        }
-
-                val url =
-                    obj.optString("url")
-                        .trim()
-
-                val publishedAt =
-                    parsePublishedAt(obj)
-
-                val normalizedTitle =
-                    normalizeText(title)
-
-                val titleKey =
-                    normalizedTitle.lowercase(Locale.US)
-
-                if (!seen.add(titleKey)) {
-                    continue
-                }
-
-                val relevance =
-                    calculateRelevance(
-                        title = normalizedTitle,
+            val scored = articles
+                .mapNotNull { article ->
+                    val relevance = calculateRelevance(
+                        article = article,
                         aliases = aliases
                     )
 
-                if (relevance <= 0) {
-                    continue
+                    if (relevance <= 0.0) {
+                        null
+                    } else {
+                        article.copy(relevance = relevance)
+                    }
                 }
-
-                val sentiment =
-                    calculateSentiment(
-                        normalizedTitle
-                    )
-
-                parsed +=
-                    NewsItem(
-                        title = title,
-                        source = source,
-                        url = url,
-                        publishedAt = publishedAt,
-                        relevance = relevance,
-                        sentiment = sentiment
-                    )
-            }
-
-            if (parsed.isEmpty()) {
-                return@withContext neutralSnapshot()
-            }
-
-            val selected =
-                parsed
-                    .sortedWith(
-                        compareByDescending<NewsItem> {
-                            it.relevance
-                        }.thenByDescending {
-                            it.publishedAt
-                        }
-                    )
-                    .take(20)
-
-            calculateSnapshot(selected)
-        }
-
-    private fun calculateSnapshot(
-        items: List<NewsItem>
-    ): NewsSnapshot {
-
-        if (items.isEmpty()) {
-            return neutralSnapshot()
-        }
-
-        var positiveWeight = 0.0
-        var negativeWeight = 0.0
-        var totalWeight = 0.0
-
-        for (item in items) {
-
-            val weight =
-                (
-                    item.relevance.coerceIn(0, 100) / 100.0
+                .sortedWith(
+                    compareByDescending<NewsItem> { it.relevance }
+                        .thenByDescending { sentimentWeight(it.sentiment) }
                 )
+                .distinctBy { it.title.trim().lowercase() }
+                .take(5)
 
-            when {
-                item.sentiment > 0 -> {
-                    positiveWeight +=
-                        weight * item.sentiment
-                }
-
-                item.sentiment < 0 -> {
-                    negativeWeight +=
-                        weight * -item.sentiment
-                }
-            }
-
-            totalWeight += weight
-        }
-
-        if (totalWeight <= 0.0) {
-            return neutralSnapshot()
-        }
-
-        val positive =
-            positiveWeight / totalWeight
-
-        val negative =
-            negativeWeight / totalWeight
-
-        val rawScore =
-            50.0 +
-            positive * 50.0 -
-            negative * 50.0
-
-        val score =
-            rawScore
-                .coerceIn(0.0, 100.0)
-                .toInt()
-
-        val relevanceAverage =
-            items
-                .map { it.relevance }
-                .average()
-
-        val confidence =
-            when {
-                items.size >= 10 &&
-                    relevanceAverage >= 75.0 ->
-                    90
-
-                items.size >= 6 &&
-                    relevanceAverage >= 65.0 ->
-                    80
-
-                items.size >= 3 &&
-                    relevanceAverage >= 55.0 ->
-                    70
-
-                items.size >= 1 ->
-                    55
-
-                else ->
-                    40
-            }
-
-        return NewsSnapshot(
-            score = score,
-            confidence = confidence,
-            items = items
-        )
-    }
-
-    /*
-     * تطبیق دقیق‌تر نماد.
-     *
-     * برای BTC و ETH دیگر صرفاً وجود حروف
-     * در عنوان کافی نیست.
-     */
-    private fun calculateRelevance(
-        title: String,
-        aliases: Set<String>
-    ): Int {
-
-        val normalized =
-            normalizeText(title)
-
-        val tokens =
-            normalized
-                .split(
-                    Regex("[^a-z0-9]+")
+            if (scored.isEmpty()) {
+                return@withContext NewsSnapshot(
+                    score = 50,
+                    confidence = 0,
+                    items = emptyList()
                 )
-                .filter {
-                    it.isNotBlank()
-                }
-                .toSet()
-
-        var best =
-            0
-
-        for (alias in aliases) {
-
-            val clean =
-                alias.lowercase(Locale.US)
-
-            if (clean.length <= 3) {
-
-                if (
-                    tokens.contains(clean)
-                ) {
-                    best =
-                        maxOf(
-                            best,
-                            90
-                        )
-                }
-
-                continue
             }
 
-            if (
-                tokens.contains(clean)
-            ) {
-                best =
-                    maxOf(
-                        best,
-                        95
-                    )
-                continue
-            }
-
-            if (
-                normalized.contains(
-                    " $clean "
-                )
-            ) {
-                best =
-                    maxOf(
-                        best,
-                        90
-                    )
-            }
-        }
-
-        /*
-         * نام‌های عمومی اکوسیستم ارز.
-         */
-        val ecosystemTerms =
-            setOf(
-                "crypto",
-                "cryptocurrency",
-                "blockchain",
-                "token",
-                "coin",
-                "defi",
-                "web3",
-                "altcoin"
+            val score = calculateNewsScore(scored)
+            val confidence = calculateConfidence(
+                totalArticles = articles.size,
+                selectedArticles = scored.size,
+                baseAsset = baseAsset
             )
 
-        val hasEcosystem =
-            tokens.any {
-                ecosystemTerms.contains(it)
+            NewsSnapshot(
+                score = score,
+                confidence = confidence,
+                items = scored
+            )
+        }
+
+    private fun parseArticles(raw: String): List<NewsItem> {
+        return runCatching {
+            val root = JSONObject(raw)
+
+            val data =
+                root.optJSONArray("Data")
+                    ?: root.optJSONArray("data")
+                    ?: JSONArray()
+
+            val result = ArrayList<NewsItem>()
+
+            for (i in 0 until data.length()) {
+                val item = data.optJSONObject(i) ?: continue
+
+                val title =
+                    item.optString("title")
+                        .ifBlank {
+                            item.optString("TITLE")
+                        }
+                        .trim()
+
+                if (title.isBlank()) continue
+
+                val source =
+                    item.optString("source_info")
+                        .ifBlank {
+                            item.optString("source")
+                        }
+                        .ifBlank {
+                            item.optString("SOURCE")
+                        }
+                        .trim()
+
+                val url =
+                    item.optString("url")
+                        .ifBlank {
+                            item.optString("URL")
+                        }
+                        .trim()
+
+                val body =
+                    item.optString("body")
+                        .ifBlank {
+                            item.optString("BODY")
+                        }
+                        .trim()
+
+                val categories =
+                    item.optString("categories")
+                        .ifBlank {
+                            item.optString("CATEGORY")
+                        }
+                        .trim()
+
+                val tags =
+                    item.optString("tags")
+                        .ifBlank {
+                            item.optString("TAGS")
+                        }
+                        .trim()
+
+                val combined =
+                    "$title $body $categories $tags"
+
+                val sentiment =
+                    detectSentiment(combined)
+
+                result += NewsItem(
+                    title = title,
+                    source = source.ifBlank { "Crypto News" },
+                    url = url,
+                    sentiment = sentiment,
+                    relevance = 0.0
+                )
             }
 
-        if (
-            hasEcosystem &&
-            best > 0
-        ) {
-            best =
-                maxOf(
-                    best,
-                    65
-                )
-        }
-
-        return best.coerceIn(
-            0,
-            100
-        )
+            result
+        }.getOrDefault(emptyList())
     }
 
-    private fun buildAliases(
-        asset: String
-    ): Set<String> {
+    private fun normalizeAsset(symbol: String): String {
+        var value = symbol
+            .trim()
+            .uppercase()
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
 
-        val aliases =
-            mutableSetOf<String>()
-
-        val clean =
-            asset
-                .trim()
-                .uppercase()
-
-        if (clean.isBlank()) {
-            return emptySet()
+        if (value.endsWith("USDT")) {
+            value = value.removeSuffix("USDT")
+        } else if (value.endsWith("USD")) {
+            value = value.removeSuffix("USD")
         }
 
-        aliases += clean
+        return value
+    }
 
-        when (clean) {
+    private fun buildAliases(asset: String): Set<String> {
+        val aliases = mutableSetOf<String>()
 
+        if (asset.isBlank()) return aliases
+
+        aliases += asset.lowercase()
+
+        when (asset.uppercase()) {
             "BTC" -> {
-                aliases += "BITCOIN"
+                aliases += "bitcoin"
+                aliases += "btc"
             }
 
             "ETH" -> {
-                aliases += "ETHEREUM"
-                aliases += "ETHER"
+                aliases += "ethereum"
+                aliases += "ether"
+                aliases += "eth"
             }
 
             "BNB" -> {
-                aliases += "BINANCE"
-                aliases += "BINANCE COIN"
+                aliases += "bnb"
+                aliases += "binance coin"
+                aliases += "bnb chain"
             }
 
             "SOL" -> {
-                aliases += "SOLANA"
+                aliases += "solana"
+                aliases += "sol"
             }
 
             "XRP" -> {
-                aliases += "RIPPLE"
+                aliases += "ripple"
+                aliases += "xrp"
             }
 
             "ADA" -> {
-                aliases += "CARDANO"
+                aliases += "cardano"
+                aliases += "ada"
             }
 
             "DOGE" -> {
-                aliases += "DOGECOIN"
+                aliases += "dogecoin"
+                aliases += "doge"
             }
 
             "TRX" -> {
-                aliases += "TRON"
+                aliases += "tron"
+                aliases += "trx"
             }
 
             "AVAX" -> {
-                aliases += "AVALANCHE"
+                aliases += "avalanche"
+                aliases += "avax"
             }
 
             "DOT" -> {
-                aliases += "POLKADOT"
+                aliases += "polkadot"
+                aliases += "dot"
             }
 
             "LINK" -> {
-                aliases += "CHAINLINK"
+                aliases += "chainlink"
+                aliases += "link"
             }
 
-            "MATIC" -> {
-                aliases += "POLYGON"
-            }
-
-            "POL" -> {
-                aliases += "POLYGON"
-                aliases += "POLYX"
-            }
-
-            "LTC" -> {
-                aliases += "LITECOIN"
-            }
-
-            "ATOM" -> {
-                aliases += "COSMOS"
-            }
-
-            "UNI" -> {
-                aliases += "UNISWAP"
-            }
-
-            "NEAR" -> {
-                aliases += "NEAR PROTOCOL"
-            }
-
-            "APT" -> {
-                aliases += "APTOS"
-            }
-
-            "ARB" -> {
-                aliases += "ARBITRUM"
-            }
-
-            "OP" -> {
-                aliases += "OPTIMISM"
-            }
-
-            "SUI" -> {
-                aliases += "SUI"
-            }
-
-            "TON" -> {
-                aliases += "TONCOIN"
-                aliases += "TON"
+            "MATIC", "POL" -> {
+                aliases += "polygon"
+                aliases += "matic"
+                aliases += "pol"
             }
 
             "SHIB" -> {
-                aliases += "SHIBA"
-                aliases += "SHIBA INU"
+                aliases += "shiba inu"
+                aliases += "shib"
             }
 
-            "PEPE" -> {
-                aliases += "PEPE"
+            "LTC" -> {
+                aliases += "litecoin"
+                aliases += "ltc"
             }
 
-            "FIL" -> {
-                aliases += "FILECOIN"
+            "BCH" -> {
+                aliases += "bitcoin cash"
+                aliases += "bch"
+            }
+
+            "ATOM" -> {
+                aliases += "cosmos"
+                aliases += "atom"
+            }
+
+            "UNI" -> {
+                aliases += "uniswap"
+                aliases += "uni"
+            }
+
+            "NEAR" -> {
+                aliases += "near protocol"
+                aliases += "near"
             }
 
             "APT" -> {
-                aliases += "APTOS"
+                aliases += "aptos"
+                aliases += "apt"
             }
 
-            "ICP" -> {
-                aliases += "INTERNET COMPUTER"
+            "ARB" -> {
+                aliases += "arbitrum"
+                aliases += "arb"
             }
 
-            "ETC" -> {
-                aliases += "ETHEREUM CLASSIC"
+            "OP" -> {
+                aliases += "optimism"
+                aliases += "op"
             }
 
-            "XLM" -> {
-                aliases += "STELLAR"
+            "SUI" -> {
+                aliases += "sui"
             }
 
-            "HBAR" -> {
-                aliases += "HEDERA"
-            }
-
-            "CRO" -> {
-                aliases += "CRONOS"
-            }
-
-            "MKR" -> {
-                aliases += "MAKER"
-            }
-
-            "AAVE" -> {
-                aliases += "AAVE"
-            }
-
-            "RUNE" -> {
-                aliases += "THORCHAIN"
+            "TON" -> {
+                aliases += "toncoin"
+                aliases += "ton"
             }
 
             "INJ" -> {
-                aliases += "INJECTIVE"
+                aliases += "injective"
+                aliases += "inj"
             }
 
-            "IMX" -> {
-                aliases += "IMMUTABLE"
+            "FIL" -> {
+                aliases += "filecoin"
+                aliases += "fil"
             }
 
-            "SEI" -> {
-                aliases += "SEI"
+            "AAVE" -> {
+                aliases += "aave"
             }
 
-            "TIA" -> {
-                aliases += "CELESTIA"
+            "ETC" -> {
+                aliases += "ethereum classic"
+                aliases += "etc"
             }
 
-            "JUP" -> {
-                aliases += "JUPITER"
+            "XLM" -> {
+                aliases += "stellar"
+                aliases += "xlm"
+            }
+
+            "ALGO" -> {
+                aliases += "algorand"
+                aliases += "algo"
+            }
+
+            "VET" -> {
+                aliases += "vechain"
+                aliases += "vet"
             }
         }
 
         return aliases
-            .map {
-                normalizeText(it)
-            }
-            .filter {
-                it.isNotBlank()
-            }
-            .toSet()
     }
 
-    private fun calculateSentiment(
-        title: String
+    private fun calculateRelevance(
+        article: NewsItem,
+        aliases: Set<String>
+    ): Double {
+
+        if (aliases.isEmpty()) return 0.0
+
+        val text =
+            article.title.lowercase() + " " +
+            article.source.lowercase()
+
+        var score = 0.0
+
+        aliases.forEach { alias ->
+            if (text.contains(alias)) {
+                score += when {
+                    article.title.lowercase().contains(alias) -> 10.0
+                    else -> 4.0
+                }
+            }
+        }
+
+        /*
+         * اگر خود خبر نام ارز را نداشت ولی در عنوان خبر
+         * درباره بازار کریپتو بود، امتیاز پایه کمی می‌گیرد.
+         * این باعث می‌شود برای ارزهای کوچک هم بخش اخبار کاملاً خالی نشود.
+         */
+        val cryptoKeywords = listOf(
+            "crypto",
+            "cryptocurrency",
+            "bitcoin",
+            "ethereum",
+            "blockchain",
+            "token",
+            "coin",
+            "defi",
+            "exchange",
+            "binance",
+            "market"
+        )
+
+        val keywordHits =
+            cryptoKeywords.count {
+                text.contains(it)
+            }
+
+        score += keywordHits * 0.15
+
+        return score
+    }
+
+    private fun detectSentiment(text: String): String {
+        val lower = text.lowercase()
+
+        val bullishWords = listOf(
+            "surge",
+            "rally",
+            "bullish",
+            "breakout",
+            "soar",
+            "rise",
+            "rises",
+            "rising",
+            "gain",
+            "gains",
+            "growth",
+            "positive",
+            "adoption",
+            "inflow",
+            "record high",
+            "all-time high",
+            "approval",
+            "approved",
+            "partnership"
+        )
+
+        val bearishWords = listOf(
+            "crash",
+            "drop",
+            "fall",
+            "falls",
+            "falling",
+            "bearish",
+            "selloff",
+            "sell-off",
+            "decline",
+            "declines",
+            "declining",
+            "loss",
+            "losses",
+            "hack",
+            "hacked",
+            "exploit",
+            "lawsuit",
+            "ban",
+            "banned",
+            "outflow",
+            "liquidation"
+        )
+
+        val bullish =
+            bullishWords.count { lower.contains(it) }
+
+        val bearish =
+            bearishWords.count { lower.contains(it) }
+
+        return when {
+            bullish > bearish -> "مثبت"
+            bearish > bullish -> "منفی"
+            else -> "خنثی"
+        }
+    }
+
+    private fun sentimentWeight(sentiment: String): Int {
+        return when (sentiment) {
+            "مثبت" -> 2
+            "خنثی" -> 1
+            "منفی" -> 0
+            else -> 0
+        }
+    }
+
+    private fun calculateNewsScore(
+        items: List<NewsItem>
     ): Int {
 
-        val positiveWords =
-            setOf(
-                "surge",
-                "surges",
-                "rally",
-                "rallies",
-                "bullish",
-                "bull",
-                "gain",
-                "gains",
-                "rise",
-                "rises",
-                "rising",
-                "breakout",
-                "breaks out",
-                "record high",
-                "all time high",
-                "ath",
-                "approval",
-                "approved",
-                "adoption",
-                "inflow",
-                "inflows",
-                "buying",
-                "accumulation",
-                "partnership",
-                "launch",
-                "growth",
-                "strong",
-                "positive",
-                "optimistic",
-                "etf inflow",
-                "institutional buying"
-            )
-
-        val negativeWords =
-            setOf(
-                "crash",
-                "crashes",
-                "collapse",
-                "collapses",
-                "bearish",
-                "bear",
-                "fall",
-                "falls",
-                "falling",
-                "drop",
-                "drops",
-                "dump",
-                "selloff",
-                "selling",
-                "outflow",
-                "outflows",
-                "hack",
-                "hacked",
-                "exploit",
-                "exploited",
-                "lawsuit",
-                "ban",
-                "banned",
-                "regulation crackdown",
-                "fraud",
-                "scam",
-                "liquidation",
-                "liquidations",
-                "bankrupt",
-                "bankruptcy",
-                "negative",
-                "warning",
-                "risk",
-                "risks",
-                "etf outflow",
-                "delisting"
-            )
+        if (items.isEmpty()) return 50
 
         var positive = 0
         var negative = 0
+        var neutral = 0
 
-        for (word in positiveWords) {
-            if (title.contains(word)) {
-                positive++
+        items.forEach {
+            when (it.sentiment) {
+                "مثبت" -> positive++
+                "منفی" -> negative++
+                else -> neutral++
             }
         }
 
-        for (word in negativeWords) {
-            if (title.contains(word)) {
-                negative++
-            }
-        }
+        val total = items.size.toDouble()
 
-        return when {
-            positive > negative ->
-                (35 + positive * 8)
-                    .coerceAtMost(100)
+        val raw =
+            50.0 +
+                (positive / total) * 35.0 -
+                (negative / total) * 35.0
 
-            negative > positive ->
-                -(35 + negative * 8)
-                    .coerceAtMost(100)
-
-            else ->
-                0
-        }
+        return raw
+            .coerceIn(0.0, 100.0)
+            .toInt()
     }
 
-    private fun parsePublishedAt(
-        obj: JSONObject
-    ): Long {
+    private fun calculateConfidence(
+        totalArticles: Int,
+        selectedArticles: Int,
+        baseAsset: String
+    ): Int {
 
-        val direct =
-            obj.optLong(
-                "published_on",
-                0L
-            )
+        if (selectedArticles == 0) return 0
 
-        if (direct > 0L) {
-            return direct * 1000L
+        var confidence = 45
+
+        if (totalArticles >= 20) {
+            confidence += 15
+        } else if (totalArticles >= 10) {
+            confidence += 10
         }
 
-        val published =
-            obj.optString(
-                "publishedAt"
-            )
-
-        return runCatching {
-            java.time.Instant
-                .parse(published)
-                .toEpochMilli()
-        }.getOrDefault(0L)
-    }
-
-    private fun normalizeText(
-        text: String
-    ): String {
-
-        return text
-            .lowercase(Locale.US)
-            .replace("&", " and ")
-            .replace(
-                Regex("[^a-z0-9]+"),
-                " "
-            )
-            .trim()
-            .replace(
-                Regex("\\s+"),
-                " "
-            )
-    }
-
-    private fun normalizeSymbol(
-        input: String
-    ): String {
-
-        val symbol =
-            input
-                .trim()
-                .uppercase()
-                .replace("/", "")
-                .replace("-", "")
-                .replace("_", "")
-                .replace(" ", "")
-
-        return when {
-            symbol.endsWith("USDT") ->
-                symbol
-
-            symbol.endsWith("USD") ->
-                symbol.removeSuffix("USD") +
-                    "USDT"
-
-            else ->
-                symbol + "USDT"
+        if (selectedArticles >= 5) {
+            confidence += 25
+        } else if (selectedArticles >= 3) {
+            confidence += 15
+        } else {
+            confidence += 5
         }
+
+        if (baseAsset.isNotBlank()) {
+            confidence += 10
+        }
+
+        return confidence.coerceIn(0, 100)
     }
 
-    private fun neutralSnapshot():
-        NewsSnapshot {
-
+    private fun emptySnapshot(): NewsSnapshot {
         return NewsSnapshot(
             score = 50,
-            confidence = 40,
+            confidence = 0,
             items = emptyList()
         )
     }
