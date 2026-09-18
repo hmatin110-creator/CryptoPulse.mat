@@ -14,7 +14,7 @@ data class NewsItem(
     val title: String,
     val source: String,
     val url: String,
-    val sentiment: String,
+    val sentiment: Int,
     val relevance: Double
 )
 
@@ -61,22 +61,31 @@ class NewsRepository {
 
             val scored = articles
                 .mapNotNull { article ->
-                    val relevance = calculateRelevance(
-                        article = article,
-                        aliases = aliases
-                    )
+
+                    val relevance =
+                        calculateRelevance(
+                            article = article,
+                            aliases = aliases
+                        )
 
                     if (relevance <= 0.0) {
                         null
                     } else {
-                        article.copy(relevance = relevance)
+                        article.copy(
+                            relevance = relevance
+                        )
                     }
                 }
                 .sortedWith(
-                    compareByDescending<NewsItem> { it.relevance }
-                        .thenByDescending { sentimentWeight(it.sentiment) }
+                    compareByDescending<NewsItem> {
+                        it.relevance
+                    }.thenByDescending {
+                        sentimentWeight(it.sentiment)
+                    }
                 )
-                .distinctBy { it.title.trim().lowercase() }
+                .distinctBy {
+                    it.title.trim().lowercase()
+                }
                 .take(5)
 
             if (scored.isEmpty()) {
@@ -87,12 +96,15 @@ class NewsRepository {
                 )
             }
 
-            val score = calculateNewsScore(scored)
-            val confidence = calculateConfidence(
-                totalArticles = articles.size,
-                selectedArticles = scored.size,
-                baseAsset = baseAsset
-            )
+            val score =
+                calculateNewsScore(scored)
+
+            val confidence =
+                calculateConfidence(
+                    totalArticles = articles.size,
+                    selectedArticles = scored.size,
+                    baseAsset = baseAsset
+                )
 
             NewsSnapshot(
                 score = score,
@@ -101,19 +113,28 @@ class NewsRepository {
             )
         }
 
-    private fun parseArticles(raw: String): List<NewsItem> {
+    private fun parseArticles(
+        raw: String
+    ): List<NewsItem> {
+
         return runCatching {
-            val root = JSONObject(raw)
+
+            val root =
+                JSONObject(raw)
 
             val data =
                 root.optJSONArray("Data")
                     ?: root.optJSONArray("data")
                     ?: JSONArray()
 
-            val result = ArrayList<NewsItem>()
+            val result =
+                ArrayList<NewsItem>()
 
             for (i in 0 until data.length()) {
-                val item = data.optJSONObject(i) ?: continue
+
+                val item =
+                    data.optJSONObject(i)
+                        ?: continue
 
                 val title =
                     item.optString("title")
@@ -122,7 +143,9 @@ class NewsRepository {
                         }
                         .trim()
 
-                if (title.isBlank()) continue
+                if (title.isBlank()) {
+                    continue
+                }
 
                 val source =
                     item.optString("source_info")
@@ -170,7 +193,9 @@ class NewsRepository {
 
                 result += NewsItem(
                     title = title,
-                    source = source.ifBlank { "Crypto News" },
+                    source = source.ifBlank {
+                        "Crypto News"
+                    },
                     url = url,
                     sentiment = sentiment,
                     relevance = 0.0
@@ -178,35 +203,49 @@ class NewsRepository {
             }
 
             result
+
         }.getOrDefault(emptyList())
     }
 
-    private fun normalizeAsset(symbol: String): String {
-        var value = symbol
-            .trim()
-            .uppercase()
-            .replace("/", "")
-            .replace("-", "")
-            .replace("_", "")
-            .replace(" ", "")
+    private fun normalizeAsset(
+        symbol: String
+    ): String {
 
-        if (value.endsWith("USDT")) {
-            value = value.removeSuffix("USDT")
-        } else if (value.endsWith("USD")) {
-            value = value.removeSuffix("USD")
+        var value =
+            symbol
+                .trim()
+                .uppercase()
+                .replace("/", "")
+                .replace("-", "")
+                .replace("_", "")
+                .replace(" ", "")
+
+        when {
+            value.endsWith("USDT") ->
+                value = value.removeSuffix("USDT")
+
+            value.endsWith("USD") ->
+                value = value.removeSuffix("USD")
         }
 
         return value
     }
 
-    private fun buildAliases(asset: String): Set<String> {
-        val aliases = mutableSetOf<String>()
+    private fun buildAliases(
+        asset: String
+    ): Set<String> {
 
-        if (asset.isBlank()) return aliases
+        val aliases =
+            mutableSetOf<String>()
+
+        if (asset.isBlank()) {
+            return aliases
+        }
 
         aliases += asset.lowercase()
 
         when (asset.uppercase()) {
+
             "BTC" -> {
                 aliases += "bitcoin"
                 aliases += "btc"
@@ -367,41 +406,50 @@ class NewsRepository {
         aliases: Set<String>
     ): Double {
 
-        if (aliases.isEmpty()) return 0.0
+        if (aliases.isEmpty()) {
+            return 0.0
+        }
 
         val text =
-            article.title.lowercase() + " " +
-            article.source.lowercase()
+            (
+                article.title.lowercase() +
+                    " " +
+                    article.source.lowercase()
+                )
 
         var score = 0.0
 
         aliases.forEach { alias ->
+
             if (text.contains(alias)) {
-                score += when {
-                    article.title.lowercase().contains(alias) -> 10.0
-                    else -> 4.0
-                }
+
+                score +=
+                    if (
+                        article.title
+                            .lowercase()
+                            .contains(alias)
+                    ) {
+                        10.0
+                    } else {
+                        4.0
+                    }
             }
         }
 
-        /*
-         * اگر خود خبر نام ارز را نداشت ولی در عنوان خبر
-         * درباره بازار کریپتو بود، امتیاز پایه کمی می‌گیرد.
-         * این باعث می‌شود برای ارزهای کوچک هم بخش اخبار کاملاً خالی نشود.
-         */
-        val cryptoKeywords = listOf(
-            "crypto",
-            "cryptocurrency",
-            "bitcoin",
-            "ethereum",
-            "blockchain",
-            "token",
-            "coin",
-            "defi",
-            "exchange",
-            "binance",
-            "market"
-        )
+        val cryptoKeywords =
+            listOf(
+                "crypto",
+                "cryptocurrency",
+                "bitcoin",
+                "ethereum",
+                "blockchain",
+                "token",
+                "coin",
+                "defi",
+                "exchange",
+                "binance",
+                "market"
+            )
 
         val keywordHits =
             cryptoKeywords.count {
@@ -413,73 +461,85 @@ class NewsRepository {
         return score
     }
 
-    private fun detectSentiment(text: String): String {
-        val lower = text.lowercase()
+    private fun detectSentiment(
+        text: String
+    ): Int {
 
-        val bullishWords = listOf(
-            "surge",
-            "rally",
-            "bullish",
-            "breakout",
-            "soar",
-            "rise",
-            "rises",
-            "rising",
-            "gain",
-            "gains",
-            "growth",
-            "positive",
-            "adoption",
-            "inflow",
-            "record high",
-            "all-time high",
-            "approval",
-            "approved",
-            "partnership"
-        )
+        val lower =
+            text.lowercase()
 
-        val bearishWords = listOf(
-            "crash",
-            "drop",
-            "fall",
-            "falls",
-            "falling",
-            "bearish",
-            "selloff",
-            "sell-off",
-            "decline",
-            "declines",
-            "declining",
-            "loss",
-            "losses",
-            "hack",
-            "hacked",
-            "exploit",
-            "lawsuit",
-            "ban",
-            "banned",
-            "outflow",
-            "liquidation"
-        )
+        val bullishWords =
+            listOf(
+                "surge",
+                "rally",
+                "bullish",
+                "breakout",
+                "soar",
+                "rise",
+                "rises",
+                "rising",
+                "gain",
+                "gains",
+                "growth",
+                "positive",
+                "adoption",
+                "inflow",
+                "record high",
+                "all-time high",
+                "approval",
+                "approved",
+                "partnership"
+            )
+
+        val bearishWords =
+            listOf(
+                "crash",
+                "drop",
+                "fall",
+                "falls",
+                "falling",
+                "bearish",
+                "selloff",
+                "sell-off",
+                "decline",
+                "declines",
+                "declining",
+                "loss",
+                "losses",
+                "hack",
+                "hacked",
+                "exploit",
+                "lawsuit",
+                "ban",
+                "banned",
+                "outflow",
+                "liquidation"
+            )
 
         val bullish =
-            bullishWords.count { lower.contains(it) }
+            bullishWords.count {
+                lower.contains(it)
+            }
 
         val bearish =
-            bearishWords.count { lower.contains(it) }
+            bearishWords.count {
+                lower.contains(it)
+            }
 
         return when {
-            bullish > bearish -> "مثبت"
-            bearish > bullish -> "منفی"
-            else -> "خنثی"
+            bullish > bearish -> 100
+            bearish > bullish -> -100
+            else -> 0
         }
     }
 
-    private fun sentimentWeight(sentiment: String): Int {
-        return when (sentiment) {
-            "مثبت" -> 2
-            "خنثی" -> 1
-            "منفی" -> 0
+    private fun sentimentWeight(
+        sentiment: Int
+    ): Int {
+
+        return when {
+            sentiment > 0 -> 2
+            sentiment == 0 -> 1
             else -> 0
         }
     }
@@ -488,21 +548,26 @@ class NewsRepository {
         items: List<NewsItem>
     ): Int {
 
-        if (items.isEmpty()) return 50
+        if (items.isEmpty()) {
+            return 50
+        }
 
         var positive = 0
         var negative = 0
-        var neutral = 0
 
         items.forEach {
-            when (it.sentiment) {
-                "مثبت" -> positive++
-                "منفی" -> negative++
-                else -> neutral++
+
+            when {
+                it.sentiment > 0 ->
+                    positive++
+
+                it.sentiment < 0 ->
+                    negative++
             }
         }
 
-        val total = items.size.toDouble()
+        val total =
+            items.size.toDouble()
 
         val raw =
             50.0 +
@@ -520,7 +585,9 @@ class NewsRepository {
         baseAsset: String
     ): Int {
 
-        if (selectedArticles == 0) return 0
+        if (selectedArticles == 0) {
+            return 0
+        }
 
         var confidence = 45
 
@@ -542,10 +609,15 @@ class NewsRepository {
             confidence += 10
         }
 
-        return confidence.coerceIn(0, 100)
+        return confidence.coerceIn(
+            0,
+            100
+        )
     }
 
-    private fun emptySnapshot(): NewsSnapshot {
+    private fun emptySnapshot():
+        NewsSnapshot {
+
         return NewsSnapshot(
             score = 50,
             confidence = 0,
