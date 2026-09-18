@@ -3,11 +3,12 @@ package com.cryptopulse.app
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
+import org.json.JSONArray
+import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
+import retrofit2.http.Query
 
 data class NewsItem(
     val title: String,
@@ -25,21 +26,23 @@ data class NewsSnapshot(
 
 class NewsRepository {
 
-    private val coinDeskApi =
+    private val api =
         Retrofit.Builder()
-            .baseUrl("https://www.coindesk.com/")
+            .baseUrl("https://min-api.cryptocompare.com/")
             .addConverterFactory(MoshiConverterFactory.create())
             .build()
-            .create(CoinDeskNewsApi::class.java)
+            .create(CryptoCompareNewsApi::class.java)
 
     suspend fun load(symbol: String): NewsSnapshot =
         withContext(Dispatchers.IO) {
 
-            val baseAsset = normalizeAsset(symbol)
-            val aliases = buildAliases(baseAsset)
+            val asset = normalizeAsset(symbol)
 
             val raw = runCatching {
-                coinDeskApi.rss().string()
+                api.news(
+                    lang = "EN",
+                    limit = 100
+                ).string()
             }.getOrElse {
                 return@withContext emptySnapshot()
             }
@@ -48,18 +51,19 @@ class NewsRepository {
                 return@withContext emptySnapshot()
             }
 
-            val articles = parseRss(raw)
+            val articles = parseArticles(raw)
 
             if (articles.isEmpty()) {
                 return@withContext emptySnapshot()
             }
 
+            val aliases = buildAliases(asset)
+
             val relevant = articles
-                .map { article ->
-                    article.copy(
+                .map { item ->
+                    item.copy(
                         relevance = calculateRelevance(
-                            title = article.title,
-                            description = article.description,
+                            item = item,
                             aliases = aliases
                         )
                     )
@@ -74,28 +78,22 @@ class NewsRepository {
                 }
                 .take(5)
 
-            /*
-             * اگر خبر کاملاً مخصوص یک ارز پیدا نشد،
-             * از خبرهای عمومی بازار کریپتو استفاده می‌کنیم
-             * تا بخش اخبار خالی نماند.
-             */
             val selected =
                 if (relevant.isNotEmpty()) {
                     relevant
                 } else {
                     articles
-                        .map { article ->
-                            article.copy(
-                                relevance = genericCryptoRelevance(
-                                    article.title,
-                                    article.description
-                                )
+                        .map { item ->
+                            item.copy(
+                                relevance = genericRelevance(item)
                             )
                         }
                         .filter { it.relevance > 0.0 }
                         .sortedWith(
                             compareByDescending<NewsItem> { it.relevance }
-                                .thenByDescending { sentimentWeight(it.sentiment) }
+                                .thenByDescending {
+                                    sentimentWeight(it.sentiment)
+                                }
                         )
                         .distinctBy {
                             it.title.trim().lowercase()
@@ -126,362 +124,312 @@ class NewsRepository {
             )
         }
 
-    private fun normalizeAsset(symbol: String): String {
-        var value = symbol.trim().uppercase()
+    private fun parseArticles(raw: String): List<NewsItem> {
 
-        value = value
+        return runCatching {
+
+            val root = JSONObject(raw)
+
+            val data =
+                root.optJSONArray("Data")
+                    ?: root.optJSONArray("data")
+                    ?: JSONArray()
+
+            val result = mutableListOf<NewsItem>()
+
+            for (i in 0 until data.length()) {
+
+                val obj = data.optJSONObject(i)
+                    ?: continue
+
+                val title =
+                    obj.optString("title")
+                        .ifBlank {
+                            obj.optString("TITLE")
+                        }
+                        .trim()
+
+                if (title.isBlank()) {
+                    continue
+                }
+
+                val source =
+                    obj.optString("source")
+                        .ifBlank {
+                            obj.optString("SOURCE")
+                        }
+                        .ifBlank {
+                            obj.optString("source_info")
+                        }
+                        .trim()
+
+                val url =
+                    obj.optString("url")
+                        .ifBlank {
+                            obj.optString("URL")
+                        }
+                        .trim()
+
+                val description =
+                    obj.optString("body")
+                        .ifBlank {
+                            obj.optString("BODY")
+                        }
+                        .ifBlank {
+                            obj.optString("description")
+                        }
+                        .trim()
+
+                val text = "$title $description"
+
+                result += NewsItem(
+                    title = title,
+                    source = source.ifBlank { "CryptoCompare" },
+                    url = url,
+                    sentiment = detectSentiment(text),
+                    relevance = 0.0
+                )
+            }
+
+            result
+
+        }.getOrElse {
+            emptyList()
+        }
+    }
+
+    private fun normalizeAsset(symbol: String): String {
+
+        var value = symbol
+            .trim()
+            .uppercase()
             .replace("/", "")
             .replace("-", "")
             .replace("_", "")
             .replace(" ", "")
 
-        if (value.endsWith("USDT")) {
-            value = value.removeSuffix("USDT")
-        } else if (value.endsWith("USD")) {
-            value = value.removeSuffix("USD")
+        when {
+            value.endsWith("USDT") ->
+                value = value.removeSuffix("USDT")
+
+            value.endsWith("USD") ->
+                value = value.removeSuffix("USD")
         }
 
         return value
     }
 
     private fun buildAliases(asset: String): Set<String> {
-        val aliases = mutableSetOf<String>()
+
+        val result = mutableSetOf<String>()
 
         if (asset.isBlank()) {
-            return aliases
+            return result
         }
 
-        aliases += asset.lowercase()
+        result += asset.lowercase()
 
-        when (asset.uppercase()) {
+        when (asset) {
+
             "BTC" -> {
-                aliases += "bitcoin"
-                aliases += "btc"
-                aliases += "xbt"
+                result += "bitcoin"
+                result += "btc"
             }
 
             "ETH" -> {
-                aliases += "ethereum"
-                aliases += "ether"
-                aliases += "eth"
+                result += "ethereum"
+                result += "ether"
+                result += "eth"
             }
 
             "BNB" -> {
-                aliases += "bnb"
-                aliases += "binance coin"
-                aliases += "binance"
+                result += "bnb"
+                result += "binance coin"
+                result += "binance"
             }
 
             "SOL" -> {
-                aliases += "solana"
-                aliases += "sol"
+                result += "solana"
+                result += "sol"
             }
 
             "XRP" -> {
-                aliases += "xrp"
-                aliases += "ripple"
+                result += "ripple"
+                result += "xrp"
             }
 
             "ADA" -> {
-                aliases += "cardano"
-                aliases += "ada"
+                result += "cardano"
+                result += "ada"
             }
 
             "DOGE" -> {
-                aliases += "dogecoin"
-                aliases += "doge"
+                result += "dogecoin"
+                result += "doge"
             }
 
             "TRX" -> {
-                aliases += "tron"
-                aliases += "trx"
+                result += "tron"
+                result += "trx"
             }
 
             "AVAX" -> {
-                aliases += "avalanche"
-                aliases += "avax"
+                result += "avalanche"
+                result += "avax"
             }
 
             "LINK" -> {
-                aliases += "chainlink"
-                aliases += "link"
+                result += "chainlink"
+                result += "link"
             }
 
             "DOT" -> {
-                aliases += "polkadot"
-                aliases += "dot"
+                result += "polkadot"
+                result += "dot"
             }
 
-            "MATIC" -> {
-                aliases += "polygon"
-                aliases += "matic"
-            }
-
-            "POL" -> {
-                aliases += "polygon"
-                aliases += "pol"
+            "MATIC", "POL" -> {
+                result += "polygon"
+                result += "matic"
+                result += "pol"
             }
 
             "LTC" -> {
-                aliases += "litecoin"
-                aliases += "ltc"
+                result += "litecoin"
+                result += "ltc"
             }
 
             "BCH" -> {
-                aliases += "bitcoin cash"
-                aliases += "bch"
+                result += "bitcoin cash"
+                result += "bch"
             }
 
             "UNI" -> {
-                aliases += "uniswap"
-                aliases += "uni"
+                result += "uniswap"
+                result += "uni"
             }
 
             "ATOM" -> {
-                aliases += "cosmos"
-                aliases += "atom"
+                result += "cosmos"
+                result += "atom"
             }
 
             "NEAR" -> {
-                aliases += "near protocol"
-                aliases += "near"
+                result += "near protocol"
+                result += "near"
             }
 
             "APT" -> {
-                aliases += "aptos"
-                aliases += "apt"
+                result += "aptos"
+                result += "apt"
             }
 
             "ARB" -> {
-                aliases += "arbitrum"
-                aliases += "arb"
+                result += "arbitrum"
+                result += "arb"
             }
 
             "OP" -> {
-                aliases += "optimism"
-                aliases += "op"
+                result += "optimism"
+                result += "op"
             }
 
             "SUI" -> {
-                aliases += "sui"
+                result += "sui"
             }
 
             "TON" -> {
-                aliases += "toncoin"
-                aliases += "ton"
+                result += "toncoin"
+                result += "ton"
             }
 
             "SHIB" -> {
-                aliases += "shiba inu"
-                aliases += "shib"
+                result += "shiba inu"
+                result += "shib"
             }
 
             "PEPE" -> {
-                aliases += "pepe"
+                result += "pepe"
             }
 
             "FIL" -> {
-                aliases += "filecoin"
-                aliases += "fil"
+                result += "filecoin"
+                result += "fil"
             }
 
             "AAVE" -> {
-                aliases += "aave"
+                result += "aave"
             }
 
             "MKR" -> {
-                aliases += "maker"
-                aliases += "makerdao"
-                aliases += "mkr"
+                result += "maker"
+                result += "makerdao"
+                result += "mkr"
             }
 
             "INJ" -> {
-                aliases += "injective"
-                aliases += "inj"
+                result += "injective"
+                result += "inj"
             }
 
             "RUNE" -> {
-                aliases += "thorchain"
-                aliases += "rune"
+                result += "thorchain"
+                result += "rune"
             }
 
             "IMX" -> {
-                aliases += "immutable"
-                aliases += "immutable x"
-                aliases += "imx"
+                result += "immutable"
+                result += "immutable x"
+                result += "imx"
             }
 
             "SEI" -> {
-                aliases += "sei"
+                result += "sei"
             }
 
             "TIA" -> {
-                aliases += "celestia"
-                aliases += "tia"
+                result += "celestia"
+                result += "tia"
             }
 
             "WIF" -> {
-                aliases += "dogwifhat"
-                aliases += "wif"
+                result += "dogwifhat"
+                result += "wif"
             }
 
             "BONK" -> {
-                aliases += "bonk"
+                result += "bonk"
             }
         }
 
-        return aliases
-    }
-
-    private fun parseRss(raw: String): List<NewsItem> {
-        val result = mutableListOf<NewsItem>()
-
-        return runCatching {
-            val factory = XmlPullParserFactory.newInstance()
-            factory.isNamespaceAware = false
-
-            val parser = factory.newPullParser()
-            parser.setInput(raw.reader())
-
-            var eventType = parser.eventType
-
-            var insideItem = false
-            var currentTag = ""
-
-            var title = ""
-            var link = ""
-            var description = ""
-            var pubDate = ""
-
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-
-                when (eventType) {
-
-                    XmlPullParser.START_TAG -> {
-                        currentTag = parser.name.lowercase()
-
-                        if (currentTag == "item") {
-                            insideItem = true
-                            title = ""
-                            link = ""
-                            description = ""
-                            pubDate = ""
-                        }
-                    }
-
-                    XmlPullParser.TEXT -> {
-                        if (insideItem) {
-                            val text = parser.text ?: ""
-
-                            when (currentTag) {
-                                "title" -> title += text
-                                "link" -> link += text
-                                "description" -> description += text
-                                "pubdate" -> pubDate += text
-                            }
-                        }
-                    }
-
-                    XmlPullParser.CDSECT -> {
-                        if (insideItem) {
-                            val text = parser.text ?: ""
-
-                            when (currentTag) {
-                                "title" -> title += text
-                                "link" -> link += text
-                                "description" -> description += text
-                            }
-                        }
-                    }
-
-                    XmlPullParser.END_TAG -> {
-                        val endTag = parser.name.lowercase()
-
-                        if (endTag == "item" && insideItem) {
-                            val cleanTitle = cleanHtml(title)
-                            val cleanDescription = cleanHtml(description)
-                            val cleanLink = cleanHtml(link)
-
-                            if (cleanTitle.isNotBlank()) {
-                                result += NewsItem(
-                                    title = cleanTitle,
-                                    source = "CoinDesk",
-                                    url = cleanLink,
-                                    sentiment = detectSentiment(
-                                        "$cleanTitle $cleanDescription"
-                                    ),
-                                    relevance = 0.0
-                                )
-                            }
-
-                            insideItem = false
-                            currentTag = ""
-                        }
-                    }
-                }
-
-                eventType = parser.next()
-            }
-
-            result
-        }.getOrElse {
-            emptyList()
-        }
-    }
-
-    private fun cleanHtml(value: String): String {
-        return value
-            .replace("<![CDATA[", "")
-            .replace("]]>", "")
-            .replace(Regex("<[^>]*>"), " ")
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+        return result
     }
 
     private fun calculateRelevance(
-        title: String,
-        description: String,
+        item: NewsItem,
         aliases: Set<String>
     ): Double {
 
-        val titleText = title.lowercase()
-        val descriptionText = description.lowercase()
+        val text = item.title.lowercase()
 
         var score = 0.0
 
-        for (alias in aliases) {
-            if (titleText.contains(alias)) {
-                score += 8.0
-            }
-
-            if (descriptionText.contains(alias)) {
-                score += 3.0
+        aliases.forEach { alias ->
+            if (text.contains(alias)) {
+                score += 10.0
             }
         }
 
-        /*
-         * خبرهایی که مستقیماً درباره ارز هستند
-         * امتیاز خیلی بیشتری می‌گیرند.
-         */
-        if (score >= 8.0) {
+        if (score >= 10.0) {
             score += 10.0
         }
 
         return score
     }
 
-    private fun genericCryptoRelevance(
-        title: String,
-        description: String
-    ): Double {
+    private fun genericRelevance(item: NewsItem): Double {
 
-        val text = "$title $description".lowercase()
+        val text = item.title.lowercase()
 
         val keywords = listOf(
             "crypto",
@@ -495,10 +443,10 @@ class NewsRepository {
             "defi",
             "stablecoin",
             "exchange",
-            "fed",
-            "interest rate",
+            "etf",
             "sec",
-            "etf"
+            "fed",
+            "interest rate"
         )
 
         var score = 0.0
@@ -513,13 +461,12 @@ class NewsRepository {
     }
 
     private fun detectSentiment(text: String): Int {
+
         val value = text.lowercase()
 
-        val bullishWords = listOf(
+        val bullish = listOf(
             "surge",
-            "surges",
             "rally",
-            "rallies",
             "rising",
             "rise",
             "gain",
@@ -531,26 +478,22 @@ class NewsRepository {
             "adoption",
             "approval",
             "approved",
-            "inflows",
             "inflow",
+            "inflows",
             "growth",
             "strong",
             "positive",
             "optimistic",
             "buy",
             "buying",
-            "accumulate",
-            "accumulation"
+            "accumulate"
         )
 
-        val bearishWords = listOf(
+        val bearish = listOf(
             "drop",
-            "drops",
             "fall",
-            "falls",
             "falling",
             "decline",
-            "declines",
             "bearish",
             "selloff",
             "sell-off",
@@ -558,8 +501,8 @@ class NewsRepository {
             "plunge",
             "loss",
             "losses",
-            "outflows",
             "outflow",
+            "outflows",
             "hack",
             "exploit",
             "lawsuit",
@@ -568,28 +511,27 @@ class NewsRepository {
             "risk",
             "weak",
             "negative",
-            "liquidation",
-            "liquidations"
+            "liquidation"
         )
 
-        var bullish = 0
-        var bearish = 0
+        var positiveCount = 0
+        var negativeCount = 0
 
-        bullishWords.forEach {
+        bullish.forEach {
             if (value.contains(it)) {
-                bullish++
+                positiveCount++
             }
         }
 
-        bearishWords.forEach {
+        bearish.forEach {
             if (value.contains(it)) {
-                bearish++
+                negativeCount++
             }
         }
 
         return when {
-            bullish > bearish -> 100
-            bearish > bullish -> -100
+            positiveCount > negativeCount -> 100
+            negativeCount > positiveCount -> -100
             else -> 0
         }
     }
@@ -613,22 +555,19 @@ class NewsRepository {
         var positive = 0
         var negative = 0
 
-        items.forEach { item ->
+        items.forEach {
             when {
-                item.sentiment > 0 -> positive++
-                item.sentiment < 0 -> negative++
+                it.sentiment > 0 -> positive++
+                it.sentiment < 0 -> negative++
             }
         }
 
         val total = items.size.toDouble()
 
-        val positiveRatio = positive / total
-        val negativeRatio = negative / total
-
         return (
             50.0 +
-                positiveRatio * 35.0 -
-                negativeRatio * 35.0
+                (positive / total) * 35.0 -
+                (negative / total) * 35.0
             )
             .toInt()
             .coerceIn(0, 100)
@@ -639,22 +578,18 @@ class NewsRepository {
         selectedArticles: Int
     ): Int {
 
-        if (totalArticles <= 0 || selectedArticles <= 0) {
-            return 0
-        }
-
-        var confidence = 40
+        var confidence = 35
 
         if (totalArticles >= 20) {
-            confidence += 15
+            confidence += 20
         } else if (totalArticles >= 10) {
             confidence += 10
         }
 
         if (selectedArticles >= 5) {
-            confidence += 30
+            confidence += 35
         } else if (selectedArticles >= 3) {
-            confidence += 20
+            confidence += 25
         } else if (selectedArticles >= 1) {
             confidence += 10
         }
@@ -671,8 +606,11 @@ class NewsRepository {
     }
 }
 
-private interface CoinDeskNewsApi {
+private interface CryptoCompareNewsApi {
 
-    @GET("arc/outboundfeeds/rss/")
-    suspend fun rss(): ResponseBody
+    @GET("data/v2/news/")
+    suspend fun news(
+        @Query("lang") lang: String,
+        @Query("limit") limit: Int
+    ): ResponseBody
 }
