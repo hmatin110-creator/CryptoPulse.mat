@@ -235,6 +235,10 @@ private fun CryptoAnalysisScreen() {
             }
 
             item {
+                TradePlanTable(result)
+            }
+
+            item {
                 NewsAnalysisCard(
                     result = result,
                     newsSnapshot = newsSnapshot
@@ -247,10 +251,6 @@ private fun CryptoAnalysisScreen() {
 
             item {
                 MoneyFlowTable(result)
-            }
-
-            item {
-                TradePlanTable(result)
             }
 
             item {
@@ -352,7 +352,7 @@ private fun HeaderSection() {
         ) {
 
             Text(
-                text = "CryptoAnalysis",
+                text = "Crypto110",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -558,6 +558,260 @@ private fun FinalResultTable(
                     "${result.trend}/100" to 190.dp
                 )
             )
+        }
+    }
+}
+
+@Composable
+private fun TradePlanTable(
+    result: AnalysisResult
+) {
+
+    val plan = result.tradePlan
+
+    val signal = finalSignal(result)
+
+    TableCard(
+        title = "🎯 محدوده‌های خرید و فروش"
+    ) {
+
+        if (plan != null) {
+
+            SharedTable(
+                columns = listOf(
+                    "مورد" to 175.dp,
+                    "مقدار" to 250.dp
+                )
+            ) {
+
+                TableHeaderRow(
+                    listOf(
+                        "مورد" to 175.dp,
+                        "مقدار" to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "سیگنال" to 175.dp,
+                        signal to 250.dp
+                    ),
+                    boldValue = true
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🟢 محدوده ورود" to 175.dp,
+                        "${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}" to 250.dp
+                    ),
+                    boldValue = true
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🔴 حد ضرر" to 175.dp,
+                        formatPrice(plan.stopLoss) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🎯 هدف اول" to 175.dp,
+                        formatPrice(plan.tp1) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🎯 هدف دوم" to 175.dp,
+                        formatPrice(plan.tp2) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "⚖️ Risk / Reward" to 175.dp,
+                        formatRR(plan.riskReward) to 250.dp
+                    )
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor =
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+
+                Text(
+                    text =
+                        when {
+                            signal.contains("خرید") ->
+                                "🟢 محدوده سبز = محدوده ورود محاسبه‌شده"
+
+                            signal.contains("فروش") ->
+                                "🔴 محدوده فروش = محدوده خروج/ورود فروش محاسبه‌شده"
+
+                            else ->
+                                "🟡 این محدوده بر اساس برنامه معامله فعلی محاسبه شده است."
+                        },
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+        } else {
+
+            /*
+             * در حالت HOLD، TradePlan از AnalysisEngine ممکن است null باشد.
+             * در این حالت به‌جای خالی گذاشتن جدول، حمایت و مقاومت واقعی
+             * تحلیل را به‌عنوان محدوده‌های احتمالی نمایش می‌دهیم.
+             */
+
+            val support =
+                result.structure.support
+
+            val resistance =
+                result.structure.resistance
+
+            val validSupport =
+                support.isFinite() && support > 0.0
+
+            val validResistance =
+                resistance.isFinite() && resistance > 0.0
+
+            if (validSupport || validResistance) {
+
+                SharedTable(
+                    columns = listOf(
+                        "مورد" to 185.dp,
+                        "مقدار" to 250.dp
+                    )
+                ) {
+
+                    TableHeaderRow(
+                        listOf(
+                            "مورد" to 185.dp,
+                            "مقدار" to 250.dp
+                        )
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "سیگنال فعلی" to 185.dp,
+                            signal to 250.dp
+                        ),
+                        boldValue = true
+                    )
+
+                    if (validSupport) {
+
+                        TableDataRow(
+                            listOf(
+                                "🟢 محدوده احتمالی خرید" to 185.dp,
+                                formatPrice(support) to 250.dp
+                            ),
+                            boldValue = true
+                        )
+                    }
+
+                    if (validResistance) {
+
+                        TableDataRow(
+                            listOf(
+                                "🔴 محدوده احتمالی فروش" to 185.dp,
+                                formatPrice(resistance) to 250.dp
+                            ),
+                            boldValue = true
+                        )
+                    }
+
+                    if (validSupport && validResistance) {
+
+                        TableDataRow(
+                            listOf(
+                                "📏 فاصله حمایت تا مقاومت" to 185.dp,
+                                "${formatPrice(support)} - ${formatPrice(resistance)}" to 250.dp
+                            )
+                        )
+                    }
+
+                    TableDataRow(
+                        listOf(
+                            "وضعیت برنامه معامله" to 185.dp,
+                            "ورود فعال تأیید نشده" to 250.dp
+                        )
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+
+                    Text(
+                        text =
+                            "🟡 سیگنال فعلی ورود قطعی را تأیید نکرده است؛ اعداد بالا محدوده‌های احتمالی حمایت و مقاومت هستند.",
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+            } else {
+
+                SharedTable(
+                    columns = listOf(
+                        "وضعیت" to 170.dp,
+                        "توضیح" to 270.dp
+                    )
+                ) {
+
+                    TableHeaderRow(
+                        listOf(
+                            "وضعیت" to 170.dp,
+                            "توضیح" to 270.dp
+                        )
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "سیگنال" to 170.dp,
+                            signal to 270.dp
+                        ),
+                        boldValue = true
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "محدوده خرید" to 170.dp,
+                            "داده کافی برای محاسبه وجود ندارد" to 270.dp
+                        )
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "محدوده فروش" to 170.dp,
+                            "داده کافی برای محاسبه وجود ندارد" to 270.dp
+                        )
+                    )
+                }
+            }
         }
     }
 }
@@ -837,7 +1091,7 @@ private fun AnalysisTable(
             TableDataRow(
                 listOf(
                     "امتیاز اخبار" to 170.dp,
-                    "${result.news}/100" to 190.dp
+                    "${result.news}/100" to 170.dp
                 )
             )
 
@@ -991,105 +1245,6 @@ private fun MoneyFlowTable(
                     "${flow.confidence}%" to 190.dp
                 )
             )
-        }
-    }
-}
-
-@Composable
-private fun TradePlanTable(
-    result: AnalysisResult
-) {
-
-    val plan = result.tradePlan
-
-    TableCard(
-        title = "🎯 برنامه معامله"
-    ) {
-
-        if (plan == null) {
-
-            SharedTable(
-                columns = listOf(
-                    "وضعیت" to 150.dp,
-                    "توضیح" to 260.dp
-                )
-            ) {
-
-                TableHeaderRow(
-                    listOf(
-                        "وضعیت" to 150.dp,
-                        "توضیح" to 260.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "برنامه معامله" to 150.dp,
-                        "در شرایط فعلی ورود فعال تأیید نشده است." to 260.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "پیشنهاد" to 150.dp,
-                        finalSignal(result) to 260.dp
-                    ),
-                    boldValue = true
-                )
-            }
-
-        } else {
-
-            SharedTable(
-                columns = listOf(
-                    "مورد" to 170.dp,
-                    "مقدار" to 250.dp
-                )
-            ) {
-
-                TableHeaderRow(
-                    listOf(
-                        "مورد" to 170.dp,
-                        "مقدار" to 250.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "محدوده ورود" to 170.dp,
-                        "${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}" to 250.dp
-                    ),
-                    boldValue = true
-                )
-
-                TableDataRow(
-                    listOf(
-                        "Stop Loss" to 170.dp,
-                        formatPrice(plan.stopLoss) to 250.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "TP1" to 170.dp,
-                        formatPrice(plan.tp1) to 250.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "TP2" to 170.dp,
-                        formatPrice(plan.tp2) to 250.dp
-                    )
-                )
-
-                TableDataRow(
-                    listOf(
-                        "Risk / Reward" to 170.dp,
-                        formatRR(plan.riskReward) to 250.dp
-                    )
-                )
-            }
         }
     }
 }
