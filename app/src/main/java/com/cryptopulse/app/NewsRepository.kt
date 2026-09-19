@@ -46,10 +46,6 @@ suspend fun load(symbol: String): NewsSnapshot =
         val asset = normalizeAsset(symbol)
         val searchTerms = buildSearchTerms(asset)
 
-        /*
-         * خبرها همچنان از Google News انگلیسی دریافت می‌شوند.
-         * هیچ تغییری در منبع خبر یا لینک اصلی ایجاد نمی‌شود.
-         */
         val raw = runCatching {
             googleNewsApi.search(
                 query = searchTerms,
@@ -96,10 +92,6 @@ suspend fun load(symbol: String): NewsSnapshot =
             return@withContext emptySnapshot()
         }
 
-        /*
-         * فقط عنوان خبرها ترجمه می‌شود.
-         * source و url همان مقدار اصلی باقی می‌مانند.
-         */
         val translated = coroutineScope {
             selected.map { item ->
                 async(Dispatchers.IO) {
@@ -128,7 +120,8 @@ suspend fun load(symbol: String): NewsSnapshot =
         )
     }
 
-private fun translateTitle(title: String): String {
+// FIX: این تابع باید suspend باشد چون translationApi.translate هم suspend است.
+private suspend fun translateTitle(title: String): String {
     if (title.isBlank()) return ""
 
     return runCatching {
