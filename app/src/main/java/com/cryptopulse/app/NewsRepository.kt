@@ -1,5 +1,6 @@
 package com.cryptopulse.app
 
+import android.util.Xml
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -7,16 +8,13 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
-import org.json.JSONArray
-import org.json.JSONObject
+import okhttp3.ResponseBody
 import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.Query
-import retrofit2.ResponseBody
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -133,14 +131,17 @@ class NewsRepository {
             )
         }
 
-    private suspend fun fetchGoogleNews(query: String): List<NewsItem> {
+    private suspend fun fetchGoogleNews(
+        query: String
+    ): List<NewsItem> {
         val encodedQuery =
             URLEncoder.encode(
                 query,
                 StandardCharsets.UTF_8.toString()
             )
 
-        val response = newsApi.search(encodedQuery).string()
+        val response =
+            newsApi.search(encodedQuery).string()
 
         return parseRss(response)
             .filter { it.title.isNotBlank() }
@@ -148,67 +149,70 @@ class NewsRepository {
     }
 
     /**
-     * ترجمه فقط عنوان برای نمایش.
+     * ترجمه عنوان خبر فقط برای نمایش.
      *
-     * نکته مهم:
-     * تحلیل احساسات با عنوان انگلیسی اصلی انجام می‌شود،
-     * بنابراین ترجمه روی امتیاز اخبار اثر نمی‌گذارد.
+     * تحلیل احساسات قبل از ترجمه و روی متن انگلیسی اصلی انجام می‌شود.
      */
-    private suspend fun translateTitle(title: String): String {
+    private suspend fun translateTitle(
+        title: String
+    ): String {
         if (title.isBlank()) return ""
 
-        // سرویس اول: translate.googleapis.com
-        val googleApiResult = runCatching {
-            val response =
-                googleTranslateApi.translate(
-                    client = "gtx",
-                    sourceLanguage = "en",
-                    targetLanguage = "fa",
-                    format = "t",
-                    text = title,
-                    html = "1",
-                    inputEncoding = "UTF-8",
-                    outputEncoding = "UTF-8"
-                ).string()
+        // سرویس اول
+        val googleApiResult =
+            runCatching {
+                val response =
+                    googleTranslateApi.translate(
+                        client = "gtx",
+                        sourceLanguage = "en",
+                        targetLanguage = "fa",
+                        format = "t",
+                        text = title,
+                        html = "1",
+                        inputEncoding = "UTF-8",
+                        outputEncoding = "UTF-8"
+                    ).string()
 
-            parseGoogleTranslation(response)
-        }.getOrDefault("")
+                parseGoogleTranslation(response)
+            }.getOrDefault("")
 
         if (googleApiResult.isNotBlank()) {
             return googleApiResult
         }
 
-        // سرویس دوم: translate.google.com
-        val googleWebResult = runCatching {
-            val response =
-                googleTranslateWebApi.translate(
-                    client = "gtx",
-                    sourceLanguage = "en",
-                    targetLanguage = "fa",
-                    format = "t",
-                    text = title,
-                    html = "1",
-                    inputEncoding = "UTF-8",
-                    outputEncoding = "UTF-8"
-                ).string()
+        // سرویس دوم
+        val googleWebResult =
+            runCatching {
+                val response =
+                    googleTranslateWebApi.translate(
+                        client = "gtx",
+                        sourceLanguage = "en",
+                        targetLanguage = "fa",
+                        format = "t",
+                        text = title,
+                        html = "1",
+                        inputEncoding = "UTF-8",
+                        outputEncoding = "UTF-8"
+                    ).string()
 
-            parseGoogleTranslation(response)
-        }.getOrDefault("")
+                parseGoogleTranslation(response)
+            }.getOrDefault("")
 
         if (googleWebResult.isNotBlank()) {
             return googleWebResult
         }
 
-        // سرویس سوم: MyMemory
-        val myMemoryResult = runCatching {
-            val response =
-                myMemoryApi.translate(
-                    query = title,
-                    languagePair = "en|fa"
-                )
+        // سرویس سوم
+        val myMemoryResult =
+            runCatching {
+                val response =
+                    myMemoryApi.translate(
+                        query = title,
+                        languagePair = "en|fa"
+                    )
 
-            parseMyMemoryTranslation(response)
-        }.getOrDefault("")
+                parseMyMemoryTranslation(response)
+            }.getOrDefault("")
 
         if (myMemoryResult.isNotBlank()) {
             return myMemoryResult
@@ -217,28 +221,21 @@ class NewsRepository {
         return ""
     }
 
-    /**
-     * پاسخ Google Translate معمولاً چیزی شبیه این است:
-     *
-     * [
-     *   [
-     *     ["ترجمه فارسی","English title",null,null,1]
-     *   ],
-     *   null,
-     *   "en"
-     * ]
-     */
-    private fun parseGoogleTranslation(raw: String): String {
+    private fun parseGoogleTranslation(
+        raw: String
+    ): String {
         if (raw.isBlank()) return ""
 
         return runCatching {
-            val root = JSONArray(raw)
+            val root =
+                org.json.JSONArray(raw)
 
             val sentences =
                 root.optJSONArray(0)
                     ?: return@runCatching ""
 
-            val result = StringBuilder()
+            val result =
+                StringBuilder()
 
             for (i in 0 until sentences.length()) {
                 val sentence =
@@ -257,7 +254,9 @@ class NewsRepository {
                 }
             }
 
-            cleanTranslatedText(result.toString())
+            cleanTranslatedText(
+                result.toString()
+            )
         }.getOrDefault("")
     }
 
@@ -277,7 +276,9 @@ class NewsRepository {
         }.getOrDefault("")
     }
 
-    private fun cleanTranslatedText(text: String): String {
+    private fun cleanTranslatedText(
+        text: String
+    ): String {
         if (text.isBlank()) return ""
 
         return text
@@ -293,21 +294,24 @@ class NewsRepository {
             .trim()
     }
 
-    private fun parseRss(xml: String): List<NewsItem> {
+    private fun parseRss(
+        xml: String
+    ): List<NewsItem> {
         if (xml.isBlank()) return emptyList()
 
-        val result = ArrayList<NewsItem>()
+        val result =
+            ArrayList<NewsItem>()
 
         return runCatching {
-            val factory =
-                XmlPullParserFactory.newInstance().apply {
-                    isNamespaceAware = true
-                }
+            val parser =
+                Xml.newPullParser()
 
-            val parser = factory.newPullParser()
-            parser.setInput(xml.reader())
+            parser.setInput(
+                xml.reader()
+            )
 
-            var eventType = parser.eventType
+            var eventType =
+                parser.eventType
 
             var insideItem = false
 
@@ -316,12 +320,15 @@ class NewsRepository {
             var description = ""
             var source = ""
 
-            while (eventType != XmlPullParser.END_DOCUMENT) {
-
+            while (
+                eventType != XmlPullParser.END_DOCUMENT
+            ) {
                 when (eventType) {
 
                     XmlPullParser.START_TAG -> {
-                        when (parser.name.lowercase()) {
+                        when (
+                            parser.name.lowercase()
+                        ) {
 
                             "item" -> {
                                 insideItem = true
@@ -333,36 +340,41 @@ class NewsRepository {
 
                             "title" -> {
                                 if (insideItem) {
-                                    title = parser.nextText()
-                                        .trim()
+                                    title =
+                                        parser.nextText()
+                                            .trim()
                                 }
                             }
 
                             "link" -> {
                                 if (insideItem) {
-                                    link = parser.nextText()
-                                        .trim()
+                                    link =
+                                        parser.nextText()
+                                            .trim()
                                 }
                             }
 
                             "description" -> {
                                 if (insideItem) {
-                                    description = parser.nextText()
-                                        .trim()
+                                    description =
+                                        parser.nextText()
+                                            .trim()
                                 }
                             }
 
                             "source" -> {
                                 if (insideItem) {
-                                    source = parser.nextText()
-                                        .trim()
+                                    source =
+                                        parser.nextText()
+                                            .trim()
                                 }
                             }
                         }
                     }
 
                     XmlPullParser.END_TAG -> {
-                        if (parser.name.equals(
+                        if (
+                            parser.name.equals(
                                 "item",
                                 ignoreCase = true
                             )
@@ -373,7 +385,9 @@ class NewsRepository {
                                     cleanRssTitle(title)
 
                                 val cleanDescription =
-                                    cleanRssDescription(description)
+                                    cleanRssDescription(
+                                        description
+                                    )
 
                                 val sentiment =
                                     calculateSentiment(
@@ -395,18 +409,30 @@ class NewsRepository {
                     }
                 }
 
-                eventType = parser.next()
+                eventType =
+                    parser.next()
             }
 
             result
         }.getOrDefault(emptyList())
     }
 
-    private fun cleanRssTitle(title: String): String {
+    private fun cleanRssTitle(
+        title: String
+    ): String {
         return title
-            .replace(Regex("\\s+-\\s+[^-]+$"), "")
-            .replace(Regex("\\s+\\|\\s+[^|]+$"), "")
-            .replace(Regex("\\s+—\\s+[^—]+$"), "")
+            .replace(
+                Regex("\\s+-\\s+[^-]+$"),
+                ""
+            )
+            .replace(
+                Regex("\\s+\\|\\s+[^|]+$"),
+                ""
+            )
+            .replace(
+                Regex("\\s+—\\s+[^—]+$"),
+                ""
+            )
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
@@ -423,7 +449,10 @@ class NewsRepository {
         if (description.isBlank()) return ""
 
         return description
-            .replace(Regex("<[^>]*>"), " ")
+            .replace(
+                Regex("<[^>]*>"),
+                " "
+            )
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
@@ -435,9 +464,14 @@ class NewsRepository {
             .trim()
     }
 
-    private fun cleanSource(source: String): String {
+    private fun cleanSource(
+        source: String
+    ): String {
         return source
-            .replace(Regex("<[^>]*>"), "")
+            .replace(
+                Regex("<[^>]*>"),
+                ""
+            )
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .trim()
@@ -447,9 +481,7 @@ class NewsRepository {
     }
 
     /**
-     * تحلیل احساسات روی متن انگلیسی اصلی.
-     *
-     * ترجمه فارسی در این قسمت استفاده نمی‌شود.
+     * تحلیل احساسات روی عنوان و توضیح انگلیسی اصلی.
      */
     private fun calculateSentiment(
         title: String,
@@ -555,7 +587,8 @@ class NewsRepository {
         }
 
         return when {
-            positive == 0 && negative == 0 -> 0
+            positive == 0 &&
+                negative == 0 -> 0
 
             positive > negative ->
                 minOf(
@@ -632,9 +665,13 @@ class NewsRepository {
             .replace(" ", "")
             .let { symbol ->
                 when {
-                    symbol.endsWith("USDT") -> symbol
+                    symbol.endsWith("USDT") ->
+                        symbol
+
                     symbol.endsWith("USD") ->
-                        symbol.removeSuffix("USD") + "USDT"
+                        symbol.removeSuffix("USD") +
+                            "USDT"
+
                     else ->
                         symbol + "USDT"
                 }
@@ -646,7 +683,8 @@ private interface GoogleNewsApi {
 
     @GET("rss/search")
     suspend fun search(
-        @Query("q", encoded = true) query: String
+        @Query("q", encoded = true)
+        query: String
     ): ResponseBody
 }
 
@@ -658,14 +696,29 @@ private interface GoogleTranslateApi {
     )
     @GET("translate_a/single")
     suspend fun translate(
-        @Query("client") client: String,
-        @Query("sl") sourceLanguage: String,
-        @Query("tl") targetLanguage: String,
-        @Query("dt") format: String,
-        @Query("q") text: String,
-        @Query("html") html: String,
-        @Query("ie") inputEncoding: String,
-        @Query("oe") outputEncoding: String
+        @Query("client")
+        client: String,
+
+        @Query("sl")
+        sourceLanguage: String,
+
+        @Query("tl")
+        targetLanguage: String,
+
+        @Query("dt")
+        format: String,
+
+        @Query("q")
+        text: String,
+
+        @Query("html")
+        html: String,
+
+        @Query("ie")
+        inputEncoding: String,
+
+        @Query("oe")
+        outputEncoding: String
     ): ResponseBody
 }
 
@@ -673,8 +726,11 @@ private interface MyMemoryApi {
 
     @GET("get")
     suspend fun translate(
-        @Query("q") query: String,
-        @Query("langpair") languagePair: String
+        @Query("q")
+        query: String,
+
+        @Query("langpair")
+        languagePair: String
     ): MyMemoryResponse
 }
 
