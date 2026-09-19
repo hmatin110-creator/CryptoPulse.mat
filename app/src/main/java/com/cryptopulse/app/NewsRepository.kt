@@ -1,6 +1,9 @@
 package com.cryptopulse.app
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
 import retrofit2.Retrofit
@@ -23,33 +26,50 @@ val items: List<NewsItem>
 )
 
 class NewsRepository {
-private val api =
-Retrofit.Builder()
-.baseUrl("https://news.google.com/")
-.addConverterFactory(MoshiConverterFactory.create())
-.build()
-.create(GoogleNewsApi::class.java)
+
+private val googleNewsApi =
+    Retrofit.Builder()
+        .baseUrl("https://news.google.com/")
+        .addConverterFactory(MoshiConverterFactory.create())
+        .build()
+        .create(GoogleNewsApi::class.java)
+
+private val translationApi =
+    Retrofit.Builder()
+        .baseUrl("https://api.mymemory.translated.net/")
+        .addConverterFactory(MoshiConverterFactory.create())
+        .build()
+        .create(TranslationApi::class.java)
 
 suspend fun load(symbol: String): NewsSnapshot =
     withContext(Dispatchers.IO) {
         val asset = normalizeAsset(symbol)
         val searchTerms = buildSearchTerms(asset)
 
+        /*
+         * خبرها همچنان از Google News انگلیسی دریافت می‌شوند.
+         * هیچ تغییری در منبع خبر یا لینک اصلی ایجاد نمی‌شود.
+         */
         val raw = runCatching {
-            api.search(
+            googleNewsApi.search(
                 query = searchTerms,
-                language = "fa",
-                country = "IR",
-                edition = "IR:fa"
+                language = "en-US",
+                country = "US",
+                edition = "US:en"
             ).string()
         }.getOrElse {
             return@withContext emptySnapshot()
         }
 
-        if (raw.isBlank()) return@withContext emptySnapshot()
+        if (raw.isBlank()) {
+            return@withContext emptySnapshot()
+        }
 
         val articles = parseRss(raw)
-        if (articles.isEmpty()) return@withContext emptySnapshot()
+
+        if (articles.isEmpty()) {
+            return@withContext emptySnapshot()
+        }
 
         val aliases = buildAliases(asset)
 
@@ -67,10 +87,32 @@ suspend fun load(symbol: String): NewsSnapshot =
                 compareByDescending<NewsItem> { it.relevance }
                     .thenByDescending { sentimentWeight(it.sentiment) }
             )
-            .distinctBy { it.title.trim().lowercase() }
+            .distinctBy {
+                it.title.trim().lowercase()
+            }
             .take(5)
 
-        if (selected.isEmpty()) return@withContext emptySnapshot()
+        if (selected.isEmpty()) {
+            return@withContext emptySnapshot()
+        }
+
+        /*
+         * فقط عنوان خبرها ترجمه می‌شود.
+         * source و url همان مقدار اصلی باقی می‌مانند.
+         */
+        val translated = coroutineScope {
+            selected.map { item ->
+                async(Dispatchers.IO) {
+                    val translatedTitle = translateTitle(item.title)
+
+                    item.copy(
+                        title = translatedTitle.ifBlank {
+                            item.title
+                        }
+                    )
+                }
+            }.awaitAll()
+        }
 
         val score = calculateNewsScore(selected)
 
@@ -82,47 +124,72 @@ suspend fun load(symbol: String): NewsSnapshot =
         NewsSnapshot(
             score = score,
             confidence = confidence,
-            items = selected
+            items = translated
         )
     }
 
+private fun translateTitle(title: String): String {
+    if (title.isBlank()) return ""
+
+    return runCatching {
+        translationApi.translate(
+            query = title,
+            languagePair = "en|fa"
+        ).responseData.translatedText
+            .let(::cleanTranslatedText)
+    }.getOrDefault("")
+}
+
+private fun cleanTranslatedText(value: String): String {
+    return value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
 private fun buildSearchTerms(asset: String): String {
     return when (asset) {
-        "BTC" -> "بیت کوین BTC ارز دیجیتال"
-        "ETH" -> "اتریوم ETH ارز دیجیتال"
-        "BNB" -> "بایننس کوین BNB ارز دیجیتال"
-        "SOL" -> "سولانا SOL ارز دیجیتال"
-        "XRP" -> "ریپل XRP ارز دیجیتال"
-        "ADA" -> "کاردانو ADA ارز دیجیتال"
-        "DOGE" -> "دوج کوین DOGE ارز دیجیتال"
-        "TRX" -> "ترون TRX ارز دیجیتال"
-        "AVAX" -> "آوالانچ AVAX ارز دیجیتال"
-        "LINK" -> "چین لینک LINK ارز دیجیتال"
-        "DOT" -> "پولکادات DOT ارز دیجیتال"
-        "MATIC", "POL" -> "پالیگان MATIC POL ارز دیجیتال"
-        "LTC" -> "لایت کوین LTC ارز دیجیتال"
-        "BCH" -> "بیت کوین کش BCH ارز دیجیتال"
-        "UNI" -> "یونی سواپ UNI ارز دیجیتال"
-        "ATOM" -> "کازماس ATOM ارز دیجیتال"
-        "NEAR" -> "نیر NEAR ارز دیجیتال"
-        "APT" -> "آپتوس APT ارز دیجیتال"
-        "ARB" -> "آربیتروم ARB ارز دیجیتال"
-        "OP" -> "آپتیمیسم OP ارز دیجیتال"
-        "SUI" -> "سوئی SUI ارز دیجیتال"
-        "TON" -> "تون کوین TON ارز دیجیتال"
-        "SHIB" -> "شیبا SHIB ارز دیجیتال"
-        "PEPE" -> "پپه PEPE ارز دیجیتال"
-        "FIL" -> "فایل کوین FIL ارز دیجیتال"
-        "AAVE" -> "آوه AAVE ارز دیجیتال"
-        "MKR" -> "میکر MKR ارز دیجیتال"
-        "INJ" -> "اینجکتیو INJ ارز دیجیتال"
-        "RUNE" -> "تورچین RUNE ارز دیجیتال"
-        "IMX" -> "ایمیوتبل IMX ارز دیجیتال"
-        "SEI" -> "سئی SEI ارز دیجیتال"
-        "TIA" -> "سلستیا TIA ارز دیجیتال"
-        "WIF" -> "داگ ویف هت WIF ارز دیجیتال"
-        "BONK" -> "بونک BONK ارز دیجیتال"
-        else -> "$asset ارز دیجیتال"
+        "BTC" -> "Bitcoin crypto"
+        "ETH" -> "Ethereum crypto"
+        "BNB" -> "BNB Binance crypto"
+        "SOL" -> "Solana crypto"
+        "XRP" -> "XRP Ripple crypto"
+        "ADA" -> "Cardano ADA crypto"
+        "DOGE" -> "Dogecoin DOGE crypto"
+        "TRX" -> "TRON TRX crypto"
+        "AVAX" -> "Avalanche AVAX crypto"
+        "LINK" -> "Chainlink LINK crypto"
+        "DOT" -> "Polkadot DOT crypto"
+        "MATIC", "POL" -> "Polygon MATIC POL crypto"
+        "LTC" -> "Litecoin LTC crypto"
+        "BCH" -> "Bitcoin Cash BCH crypto"
+        "UNI" -> "Uniswap UNI crypto"
+        "ATOM" -> "Cosmos ATOM crypto"
+        "NEAR" -> "NEAR Protocol crypto"
+        "APT" -> "Aptos APT crypto"
+        "ARB" -> "Arbitrum ARB crypto"
+        "OP" -> "Optimism OP crypto"
+        "SUI" -> "Sui crypto"
+        "TON" -> "Toncoin TON crypto"
+        "SHIB" -> "Shiba Inu SHIB crypto"
+        "PEPE" -> "PEPE crypto"
+        "FIL" -> "Filecoin FIL crypto"
+        "AAVE" -> "Aave crypto"
+        "MKR" -> "Maker MKR crypto"
+        "INJ" -> "Injective INJ crypto"
+        "RUNE" -> "THORChain RUNE crypto"
+        "IMX" -> "Immutable IMX crypto"
+        "SEI" -> "SEI crypto"
+        "TIA" -> "Celestia TIA crypto"
+        "WIF" -> "dogwifhat WIF crypto"
+        "BONK" -> "BONK crypto"
+        else -> "$asset crypto"
     }
 }
 
@@ -263,198 +330,172 @@ private fun buildAliases(asset: String): Set<String> {
     when (asset) {
         "BTC" -> {
             result += "bitcoin"
-            result += "بیت کوین"
-            result += "بیت‌کوین"
+            result += "btc"
         }
 
         "ETH" -> {
             result += "ethereum"
             result += "ether"
-            result += "اتریوم"
+            result += "eth"
         }
 
         "BNB" -> {
             result += "bnb"
             result += "binance"
             result += "binance coin"
-            result += "بایننس"
-            result += "بایننس کوین"
         }
 
         "SOL" -> {
             result += "solana"
-            result += "سولانا"
+            result += "sol"
         }
 
         "XRP" -> {
             result += "ripple"
-            result += "ریپل"
+            result += "xrp"
         }
 
         "ADA" -> {
             result += "cardano"
-            result += "کاردانو"
+            result += "ada"
         }
 
         "DOGE" -> {
             result += "dogecoin"
             result += "doge"
-            result += "دوج کوین"
-            result += "دوج‌کوین"
         }
 
         "TRX" -> {
             result += "tron"
-            result += "ترون"
+            result += "trx"
         }
 
         "AVAX" -> {
             result += "avalanche"
-            result += "آوالانچ"
+            result += "avax"
         }
 
         "LINK" -> {
             result += "chainlink"
-            result += "چین لینک"
-            result += "چین‌لینک"
+            result += "link"
         }
 
         "DOT" -> {
             result += "polkadot"
-            result += "پولکادات"
+            result += "dot"
         }
 
         "MATIC", "POL" -> {
             result += "polygon"
             result += "matic"
             result += "pol"
-            result += "پالیگان"
         }
 
         "LTC" -> {
             result += "litecoin"
-            result += "لایت کوین"
-            result += "لایت‌کوین"
+            result += "ltc"
         }
 
         "BCH" -> {
             result += "bitcoin cash"
-            result += "بیت کوین کش"
-            result += "بیت‌کوین کش"
+            result += "bch"
         }
 
         "UNI" -> {
             result += "uniswap"
-            result += "یونی سواپ"
-            result += "یونی‌سواپ"
+            result += "uni"
         }
 
         "ATOM" -> {
             result += "cosmos"
-            result += "کازماس"
+            result += "atom"
         }
 
         "NEAR" -> {
             result += "near protocol"
             result += "near"
-            result += "نیر"
         }
 
         "APT" -> {
             result += "aptos"
-            result += "آپتوس"
+            result += "apt"
         }
 
         "ARB" -> {
             result += "arbitrum"
-            result += "آربیتروم"
+            result += "arb"
         }
 
         "OP" -> {
             result += "optimism"
-            result += "آپتیمیسم"
+            result += "op"
         }
 
         "SUI" -> {
             result += "sui"
-            result += "سوئی"
         }
 
         "TON" -> {
             result += "toncoin"
             result += "ton"
-            result += "تون کوین"
-            result += "تون‌کوین"
         }
 
         "SHIB" -> {
             result += "shiba inu"
             result += "shib"
-            result += "شیبا"
         }
 
         "PEPE" -> {
             result += "pepe"
-            result += "پپه"
         }
 
         "FIL" -> {
             result += "filecoin"
-            result += "فایل کوین"
-            result += "فایل‌کوین"
+            result += "fil"
         }
 
         "AAVE" -> {
             result += "aave"
-            result += "آوه"
         }
 
         "MKR" -> {
             result += "maker"
             result += "makerdao"
             result += "mkr"
-            result += "میکر"
         }
 
         "INJ" -> {
             result += "injective"
             result += "inj"
-            result += "اینجکتیو"
         }
 
         "RUNE" -> {
             result += "thorchain"
             result += "rune"
-            result += "تورچین"
         }
 
         "IMX" -> {
             result += "immutable"
             result += "immutable x"
             result += "imx"
-            result += "ایمیوتبل"
         }
 
         "SEI" -> {
             result += "sei"
-            result += "سئی"
         }
 
         "TIA" -> {
             result += "celestia"
             result += "tia"
-            result += "سلستیا"
         }
 
         "WIF" -> {
             result += "dogwifhat"
             result += "wif"
-            result += "داگ ویف هت"
         }
 
         "BONK" -> {
             result += "bonk"
-            result += "بونک"
         }
     }
 
@@ -506,29 +547,7 @@ private fun detectSentiment(text: String): Int {
         "optimistic",
         "buy",
         "buying",
-        "accumulate",
-
-        "صعود",
-        "صعودی",
-        "رشد",
-        "افزایش",
-        "افزایش قیمت",
-        "جهش",
-        "رالی",
-        "رکورد",
-        "رکورد جدید",
-        "شکست مقاومت",
-        "ورود سرمایه",
-        "ورود پول",
-        "تایید",
-        "پذیرش",
-        "مثبت",
-        "خوش‌بین",
-        "خوش بین",
-        "خرید",
-        "تقاضا",
-        "سود",
-        "رونق"
+        "accumulate"
     )
 
     val bearish = listOf(
@@ -553,34 +572,7 @@ private fun detectSentiment(text: String): Int {
         "risk",
         "weak",
         "negative",
-        "liquidation",
-
-        "سقوط",
-        "سقوط قیمت",
-        "کاهش",
-        "کاهش قیمت",
-        "افت",
-        "ریزش",
-        "نزولی",
-        "فروش",
-        "فشار فروش",
-        "خروج سرمایه",
-        "خروج پول",
-        "هک",
-        "حمله",
-        "اکسپلویت",
-        "ممنوع",
-        "ممنوعیت",
-        "ریسک",
-        "ضعف",
-        "ضعیف",
-        "زیان",
-        "ضرر",
-        "لیکوییدیشن",
-        "انحلال",
-        "شکایت",
-        "منفی",
-        "اصلاح شدید"
+        "liquidation"
     )
 
     var positive = 0
@@ -613,7 +605,9 @@ private fun sentimentWeight(sentiment: Int): Int {
     }
 }
 
-private fun calculateNewsScore(items: List<NewsItem>): Int {
+private fun calculateNewsScore(
+    items: List<NewsItem>
+): Int {
     if (items.isEmpty()) return 50
 
     var positive = 0
@@ -670,12 +664,32 @@ private fun emptySnapshot(): NewsSnapshot {
 
 }
 
+private data class TranslationResponse(
+val responseData: TranslationData
+)
+
+private data class TranslationData(
+val translatedText: String
+)
+
 private interface GoogleNewsApi {
+
 @GET("rss/search")
 suspend fun search(
-@Query("q") query: String,
-@Query("hl") language: String,
-@Query("gl") country: String,
-@Query("ceid") edition: String
+    @Query("q") query: String,
+    @Query("hl") language: String,
+    @Query("gl") country: String,
+    @Query("ceid") edition: String
 ): ResponseBody
+
+}
+
+private interface TranslationApi {
+
+@GET("get")
+suspend fun translate(
+    @Query("q") query: String,
+    @Query("langpair") languagePair: String
+): TranslationResponse
+
 }
