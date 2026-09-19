@@ -6,6 +6,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
+import org.json.JSONArray
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
@@ -36,10 +37,10 @@ private val googleNewsApi =
 
 private val translationApi =
     Retrofit.Builder()
-        .baseUrl("https://api.mymemory.translated.net/")
+        .baseUrl("https://translate.googleapis.com/")
         .addConverterFactory(MoshiConverterFactory.create())
         .build()
-        .create(TranslationApi::class.java)
+        .create(GoogleTranslateApi::class.java)
 
 suspend fun load(symbol: String): NewsSnapshot =
     withContext(Dispatchers.IO) {
@@ -92,6 +93,10 @@ suspend fun load(symbol: String): NewsSnapshot =
             return@withContext emptySnapshot()
         }
 
+        /*
+         * فقط عنوان خبر ترجمه می‌شود.
+         * source و url همان مقادیر اصلی باقی می‌مانند.
+         */
         val translated = coroutineScope {
             selected.map { item ->
                 async(Dispatchers.IO) {
@@ -120,16 +125,47 @@ suspend fun load(symbol: String): NewsSnapshot =
         )
     }
 
-// FIX: این تابع باید suspend باشد چون translationApi.translate هم suspend است.
 private suspend fun translateTitle(title: String): String {
     if (title.isBlank()) return ""
 
     return runCatching {
-        translationApi.translate(
-            query = title,
-            languagePair = "en|fa"
-        ).responseData.translatedText
-            .let(::cleanTranslatedText)
+        val response = translationApi.translate(
+            client = "gtx",
+            sourceLanguage = "en",
+            targetLanguage = "fa",
+            format = "text",
+            text = title
+        ).string()
+
+        parseGoogleTranslation(response)
+    }.getOrDefault("")
+}
+
+private fun parseGoogleTranslation(raw: String): String {
+    if (raw.isBlank()) return ""
+
+    return runCatching {
+        val root = JSONArray(raw)
+        val translations = root.optJSONArray(0)
+            ?: return@runCatching ""
+
+        val result = StringBuilder()
+
+        for (i in 0 until translations.length()) {
+            val part = translations.optJSONArray(i)
+                ?: continue
+
+            val translated = part.optString(0)
+
+            if (translated.isNotBlank()) {
+                if (result.isNotEmpty()) {
+                    result.append(" ")
+                }
+                result.append(translated)
+            }
+        }
+
+        cleanTranslatedText(result.toString())
     }.getOrDefault("")
 }
 
@@ -657,14 +693,6 @@ private fun emptySnapshot(): NewsSnapshot {
 
 }
 
-private data class TranslationResponse(
-val responseData: TranslationData
-)
-
-private data class TranslationData(
-val translatedText: String
-)
-
 private interface GoogleNewsApi {
 
 @GET("rss/search")
@@ -677,12 +705,15 @@ suspend fun search(
 
 }
 
-private interface TranslationApi {
+private interface GoogleTranslateApi {
 
-@GET("get")
+@GET("translate_a/single")
 suspend fun translate(
-    @Query("q") query: String,
-    @Query("langpair") languagePair: String
-): TranslationResponse
+    @Query("client") client: String,
+    @Query("sl") sourceLanguage: String,
+    @Query("tl") targetLanguage: String,
+    @Query("dt") format: String,
+    @Query("q") text: String
+): ResponseBody
 
 }
