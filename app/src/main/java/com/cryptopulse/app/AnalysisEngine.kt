@@ -597,6 +597,73 @@ object AnalysisEngine {
                 signal
             )
 
+        /*
+         * ---------------------------------------------------------
+         * محدوده معامله در reasons
+         * ---------------------------------------------------------
+         *
+         * این بخش علاوه بر finalAnalysis در reasons نیز قرار می‌گیرد
+         * تا اگر رابط کاربری فقط reasons را نمایش دهد، محدوده معامله
+         * همچنان برای کاربر قابل مشاهده باشد.
+         */
+        if (plan != null) {
+
+            when {
+
+                signal == "BUY" ||
+                    signal == "STRONG BUY" -> {
+
+                    reasons +=
+                        "🎯 محدوده ورود: " +
+                            "${formatPrice(plan.entryLow)} تا " +
+                            formatPrice(plan.entryHigh)
+
+                    reasons +=
+                        "🎯 محدوده خروج هدف: " +
+                            "${formatPrice(plan.tp1)} تا " +
+                            formatPrice(plan.tp2)
+
+                    reasons +=
+                        "🛑 حد خروج اضطراری: " +
+                            formatPrice(plan.stopLoss)
+
+                    reasons +=
+                        "📊 نسبت ریسک به بازده: " +
+                            String.format(
+                                java.util.Locale.US,
+                                "%.2f",
+                                plan.riskReward
+                            )
+                }
+
+                signal == "SELL" ||
+                    signal == "STRONG SELL" -> {
+
+                    reasons +=
+                        "🎯 محدوده خروج احتمالی: " +
+                            "${formatPrice(plan.tp2)} تا " +
+                            formatPrice(plan.tp1)
+
+                    reasons +=
+                        "📉 هدف نزولی: " +
+                            "${formatPrice(plan.tp2)} تا " +
+                            formatPrice(plan.tp1)
+
+                    reasons +=
+                        "🛑 حد خروج اضطراری: " +
+                            formatPrice(plan.stopLoss)
+
+                    reasons +=
+                        "📊 نسبت ریسک به بازده: " +
+                            String.format(
+                                java.util.Locale.US,
+                                "%.2f",
+                                plan.riskReward
+                            )
+                }
+            }
+        }
+
         val finalAnalysis =
             buildFinalAnalysis(
                 signal = signal,
@@ -753,15 +820,6 @@ object AnalysisEngine {
          * ---------------------------------------------------------
          * محدوده معامله در تحلیل نهایی
          * ---------------------------------------------------------
-         *
-         * BUY / STRONG BUY:
-         * محدوده ورود + اهداف خروج + حد خروج اضطراری
-         *
-         * SELL / STRONG SELL:
-         * محدوده خروج + اهداف نزولی + حد خروج اضطراری
-         *
-         * HOLD:
-         * هیچ محدوده معامله‌ای نمایش داده نمی‌شود.
          */
         when {
 
@@ -777,11 +835,8 @@ object AnalysisEngine {
                         formatPrice(tradePlan.entryHigh)
 
                 parts +=
-                    "🎯 هدف خروج ۱: " +
-                        formatPrice(tradePlan.tp1)
-
-                parts +=
-                    "🎯 هدف خروج ۲: " +
+                    "🎯 محدوده خروج هدف: " +
+                        "${formatPrice(tradePlan.tp1)} تا " +
                         formatPrice(tradePlan.tp2)
 
                 parts +=
@@ -804,17 +859,14 @@ object AnalysisEngine {
                 tradePlan != null -> {
 
                 parts +=
-                    "🎯 محدوده خروج: " +
+                    "🎯 محدوده خروج احتمالی: " +
                         "${formatPrice(tradePlan.tp2)} تا " +
                         formatPrice(tradePlan.tp1)
 
                 parts +=
-                    "📉 هدف نزولی ۱: " +
+                    "📉 هدف نزولی: " +
+                        "${formatPrice(tradePlan.tp2)} تا " +
                         formatPrice(tradePlan.tp1)
-
-                parts +=
-                    "📉 هدف نزولی ۲: " +
-                        formatPrice(tradePlan.tp2)
 
                 parts +=
                     "🛑 حد خروج اضطراری: " +
@@ -1650,7 +1702,7 @@ object AnalysisEngine {
         }
 
     private fun cmf(
-        candles: List<Candle>
+        candles: List<Candle
     ): Double {
 
         var money = 0.0
