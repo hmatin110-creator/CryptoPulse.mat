@@ -5,715 +5,683 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import okhttp3.ResponseBody
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
 import org.json.JSONArray
+import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.GET
+import retrofit2.http.Headers
 import retrofit2.http.Query
+import retrofit2.ResponseBody
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeUnit
 
 data class NewsItem(
-val title: String,
-val source: String,
-val url: String,
-val sentiment: Int,
-val relevance: Double
+    val title: String,
+    val source: String,
+    val link: String,
+    val description: String = "",
+    val sentiment: Int = 0
 )
 
 data class NewsSnapshot(
-val score: Int,
-val confidence: Int,
-val items: List<NewsItem>
+    val score: Int,
+    val confidence: Int,
+    val items: List<NewsItem>
 )
 
 class NewsRepository {
 
-private val googleNewsApi =
-    Retrofit.Builder()
-        .baseUrl("https://news.google.com/")
-        .addConverterFactory(MoshiConverterFactory.create())
-        .build()
-        .create(GoogleNewsApi::class.java)
+    private val userAgentInterceptor = Interceptor { chain ->
+        val request = chain.request()
+            .newBuilder()
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            )
+            .header("Accept", "*/*")
+            .build()
 
-private val translationApi =
-    Retrofit.Builder()
-        .baseUrl("https://translate.googleapis.com/")
-        .addConverterFactory(MoshiConverterFactory.create())
-        .build()
-        .create(GoogleTranslateApi::class.java)
+        chain.proceed(request)
+    }
 
-suspend fun load(symbol: String): NewsSnapshot =
-    withContext(Dispatchers.IO) {
-        val asset = normalizeAsset(symbol)
-        val searchTerms = buildSearchTerms(asset)
+    private val httpClient =
+        OkHttpClient.Builder()
+            .addInterceptor(userAgentInterceptor)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
+            .build()
 
-        val raw = runCatching {
-            googleNewsApi.search(
-                query = searchTerms,
-                language = "en-US",
-                country = "US",
-                edition = "US:en"
-            ).string()
-        }.getOrElse {
-            return@withContext emptySnapshot()
-        }
+    private val newsApi =
+        Retrofit.Builder()
+            .baseUrl("https://news.google.com/")
+            .client(httpClient)
+            .build()
+            .create(GoogleNewsApi::class.java)
 
-        if (raw.isBlank()) {
-            return@withContext emptySnapshot()
-        }
+    private val googleTranslateApi =
+        Retrofit.Builder()
+            .baseUrl("https://translate.googleapis.com/")
+            .client(httpClient)
+            .build()
+            .create(GoogleTranslateApi::class.java)
 
-        val articles = parseRss(raw)
+    private val googleTranslateWebApi =
+        Retrofit.Builder()
+            .baseUrl("https://translate.google.com/")
+            .client(httpClient)
+            .build()
+            .create(GoogleTranslateApi::class.java)
 
-        if (articles.isEmpty()) {
-            return@withContext emptySnapshot()
-        }
+    private val myMemoryApi =
+        Retrofit.Builder()
+            .baseUrl("https://api.mymemory.translated.net/")
+            .client(httpClient)
+            .addConverterFactory(MoshiConverterFactory.create())
+            .build()
+            .create(MyMemoryApi::class.java)
 
-        val aliases = buildAliases(asset)
+    suspend fun load(symbol: String): NewsSnapshot =
+        withContext(Dispatchers.IO) {
+            val normalized = normalizeSymbol(symbol)
+            val query = buildSearchQuery(normalized)
 
-        val selected = articles
-            .map { item ->
-                item.copy(
-                    relevance = calculateRelevance(
-                        item = item,
-                        aliases = aliases
-                    )
+            val originalItems = runCatching {
+                fetchGoogleNews(query)
+            }.getOrDefault(emptyList())
+
+            if (originalItems.isEmpty()) {
+                return@withContext NewsSnapshot(
+                    score = 50,
+                    confidence = 20,
+                    items = emptyList()
                 )
             }
-            .filter { it.relevance > 0.0 }
-            .sortedWith(
-                compareByDescending<NewsItem> { it.relevance }
-                    .thenByDescending { sentimentWeight(it.sentiment) }
-            )
-            .distinctBy {
-                it.title.trim().lowercase()
-            }
-            .take(5)
 
-        if (selected.isEmpty()) {
-            return@withContext emptySnapshot()
-        }
+            val translatedItems = coroutineScope {
+                originalItems
+                    .take(10)
+                    .map { item ->
+                        async {
+                            val translatedTitle =
+                                translateTitle(item.title)
 
-        /*
-         * فقط عنوان خبر ترجمه می‌شود.
-         * source و url همان مقادیر اصلی باقی می‌مانند.
-         */
-        val translated = coroutineScope {
-            selected.map { item ->
-                async(Dispatchers.IO) {
-                    val translatedTitle = translateTitle(item.title)
-
-                    item.copy(
-                        title = translatedTitle.ifBlank {
-                            item.title
+                            item.copy(
+                                title = translatedTitle.ifBlank {
+                                    item.title
+                                }
+                            )
                         }
-                    )
-                }
-            }.awaitAll()
+                    }
+                    .awaitAll()
+            }
+
+            val score = calculateNewsScore(originalItems)
+            val confidence = calculateConfidence(originalItems)
+
+            NewsSnapshot(
+                score = score,
+                confidence = confidence,
+                items = translatedItems
+            )
         }
 
-        val score = calculateNewsScore(selected)
+    private suspend fun fetchGoogleNews(query: String): List<NewsItem> {
+        val encodedQuery =
+            URLEncoder.encode(
+                query,
+                StandardCharsets.UTF_8.toString()
+            )
 
-        val confidence = calculateConfidence(
-            totalArticles = articles.size,
-            selectedArticles = selected.size
-        )
+        val response = newsApi.search(encodedQuery).string()
 
-        NewsSnapshot(
-            score = score,
-            confidence = confidence,
-            items = translated
-        )
+        return parseRss(response)
+            .filter { it.title.isNotBlank() }
+            .take(10)
     }
 
-private suspend fun translateTitle(title: String): String {
-    if (title.isBlank()) return ""
+    /**
+     * ترجمه فقط عنوان برای نمایش.
+     *
+     * نکته مهم:
+     * تحلیل احساسات با عنوان انگلیسی اصلی انجام می‌شود،
+     * بنابراین ترجمه روی امتیاز اخبار اثر نمی‌گذارد.
+     */
+    private suspend fun translateTitle(title: String): String {
+        if (title.isBlank()) return ""
 
-    return runCatching {
-        val response = translationApi.translate(
-            client = "gtx",
-            sourceLanguage = "en",
-            targetLanguage = "fa",
-            format = "text",
-            text = title
-        ).string()
+        // سرویس اول: translate.googleapis.com
+        val googleApiResult = runCatching {
+            val response =
+                googleTranslateApi.translate(
+                    client = "gtx",
+                    sourceLanguage = "en",
+                    targetLanguage = "fa",
+                    format = "t",
+                    text = title,
+                    html = "1",
+                    inputEncoding = "UTF-8",
+                    outputEncoding = "UTF-8"
+                ).string()
 
-        parseGoogleTranslation(response)
-    }.getOrDefault("")
-}
+            parseGoogleTranslation(response)
+        }.getOrDefault("")
 
-private fun parseGoogleTranslation(raw: String): String {
-    if (raw.isBlank()) return ""
+        if (googleApiResult.isNotBlank()) {
+            return googleApiResult
+        }
 
-    return runCatching {
-        val root = JSONArray(raw)
-        val translations = root.optJSONArray(0)
-            ?: return@runCatching ""
+        // سرویس دوم: translate.google.com
+        val googleWebResult = runCatching {
+            val response =
+                googleTranslateWebApi.translate(
+                    client = "gtx",
+                    sourceLanguage = "en",
+                    targetLanguage = "fa",
+                    format = "t",
+                    text = title,
+                    html = "1",
+                    inputEncoding = "UTF-8",
+                    outputEncoding = "UTF-8"
+                ).string()
 
-        val result = StringBuilder()
+            parseGoogleTranslation(response)
+        }.getOrDefault("")
 
-        for (i in 0 until translations.length()) {
-            val part = translations.optJSONArray(i)
-                ?: continue
+        if (googleWebResult.isNotBlank()) {
+            return googleWebResult
+        }
 
-            val translated = part.optString(0)
+        // سرویس سوم: MyMemory
+        val myMemoryResult = runCatching {
+            val response =
+                myMemoryApi.translate(
+                    query = title,
+                    languagePair = "en|fa"
+                )
 
-            if (translated.isNotBlank()) {
-                if (result.isNotEmpty()) {
-                    result.append(" ")
+            parseMyMemoryTranslation(response)
+        }.getOrDefault("")
+
+        if (myMemoryResult.isNotBlank()) {
+            return myMemoryResult
+        }
+
+        return ""
+    }
+
+    /**
+     * پاسخ Google Translate معمولاً چیزی شبیه این است:
+     *
+     * [
+     *   [
+     *     ["ترجمه فارسی","English title",null,null,1]
+     *   ],
+     *   null,
+     *   "en"
+     * ]
+     */
+    private fun parseGoogleTranslation(raw: String): String {
+        if (raw.isBlank()) return ""
+
+        return runCatching {
+            val root = JSONArray(raw)
+
+            val sentences =
+                root.optJSONArray(0)
+                    ?: return@runCatching ""
+
+            val result = StringBuilder()
+
+            for (i in 0 until sentences.length()) {
+                val sentence =
+                    sentences.optJSONArray(i)
+                        ?: continue
+
+                val translated =
+                    sentence.optString(0).trim()
+
+                if (translated.isNotBlank()) {
+                    if (result.isNotEmpty()) {
+                        result.append(" ")
+                    }
+
+                    result.append(translated)
                 }
-                result.append(translated)
+            }
+
+            cleanTranslatedText(result.toString())
+        }.getOrDefault("")
+    }
+
+    private fun parseMyMemoryTranslation(
+        response: MyMemoryResponse?
+    ): String {
+        if (response == null) return ""
+
+        return runCatching {
+            val text =
+                response.responseData
+                    ?.translatedText
+                    ?.trim()
+                    .orEmpty()
+
+            cleanTranslatedText(text)
+        }.getOrDefault("")
+    }
+
+    private fun cleanTranslatedText(text: String): String {
+        if (text.isBlank()) return ""
+
+        return text
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
+            .replace("\\u0026", "&")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun parseRss(xml: String): List<NewsItem> {
+        if (xml.isBlank()) return emptyList()
+
+        val result = ArrayList<NewsItem>()
+
+        return runCatching {
+            val factory =
+                XmlPullParserFactory.newInstance().apply {
+                    isNamespaceAware = true
+                }
+
+            val parser = factory.newPullParser()
+            parser.setInput(xml.reader())
+
+            var eventType = parser.eventType
+
+            var insideItem = false
+
+            var title = ""
+            var link = ""
+            var description = ""
+            var source = ""
+
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+
+                when (eventType) {
+
+                    XmlPullParser.START_TAG -> {
+                        when (parser.name.lowercase()) {
+
+                            "item" -> {
+                                insideItem = true
+                                title = ""
+                                link = ""
+                                description = ""
+                                source = ""
+                            }
+
+                            "title" -> {
+                                if (insideItem) {
+                                    title = parser.nextText()
+                                        .trim()
+                                }
+                            }
+
+                            "link" -> {
+                                if (insideItem) {
+                                    link = parser.nextText()
+                                        .trim()
+                                }
+                            }
+
+                            "description" -> {
+                                if (insideItem) {
+                                    description = parser.nextText()
+                                        .trim()
+                                }
+                            }
+
+                            "source" -> {
+                                if (insideItem) {
+                                    source = parser.nextText()
+                                        .trim()
+                                }
+                            }
+                        }
+                    }
+
+                    XmlPullParser.END_TAG -> {
+                        if (parser.name.equals(
+                                "item",
+                                ignoreCase = true
+                            )
+                        ) {
+                            if (title.isNotBlank()) {
+
+                                val originalTitle =
+                                    cleanRssTitle(title)
+
+                                val cleanDescription =
+                                    cleanRssDescription(description)
+
+                                val sentiment =
+                                    calculateSentiment(
+                                        originalTitle,
+                                        cleanDescription
+                                    )
+
+                                result += NewsItem(
+                                    title = originalTitle,
+                                    source = cleanSource(source),
+                                    link = link,
+                                    description = cleanDescription,
+                                    sentiment = sentiment
+                                )
+                            }
+
+                            insideItem = false
+                        }
+                    }
+                }
+
+                eventType = parser.next()
+            }
+
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private fun cleanRssTitle(title: String): String {
+        return title
+            .replace(Regex("\\s+-\\s+[^-]+$"), "")
+            .replace(Regex("\\s+\\|\\s+[^|]+$"), "")
+            .replace(Regex("\\s+—\\s+[^—]+$"), "")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun cleanRssDescription(
+        description: String
+    ): String {
+        if (description.isBlank()) return ""
+
+        return description
+            .replace(Regex("<[^>]*>"), " ")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun cleanSource(source: String): String {
+        return source
+            .replace(Regex("<[^>]*>"), "")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .trim()
+            .ifBlank {
+                "نامشخص"
+            }
+    }
+
+    /**
+     * تحلیل احساسات روی متن انگلیسی اصلی.
+     *
+     * ترجمه فارسی در این قسمت استفاده نمی‌شود.
+     */
+    private fun calculateSentiment(
+        title: String,
+        description: String
+    ): Int {
+        val text =
+            "$title $description"
+                .lowercase()
+
+        val positiveWords =
+            listOf(
+                "surge",
+                "surges",
+                "surging",
+                "rally",
+                "rallies",
+                "rising",
+                "rise",
+                "rises",
+                "gains",
+                "gain",
+                "bullish",
+                "breakout",
+                "breaks out",
+                "record",
+                "high",
+                "higher",
+                "growth",
+                "positive",
+                "approval",
+                "approved",
+                "adoption",
+                "partnership",
+                "launch",
+                "success",
+                "strong",
+                "stronger",
+                "recovery",
+                "recover",
+                "inflow",
+                "inflows",
+                "accumulate",
+                "accumulation",
+                "buying"
+            )
+
+        val negativeWords =
+            listOf(
+                "crash",
+                "crashes",
+                "fall",
+                "falls",
+                "falling",
+                "drop",
+                "drops",
+                "dropping",
+                "decline",
+                "declines",
+                "declining",
+                "bearish",
+                "breakdown",
+                "breaks down",
+                "low",
+                "lower",
+                "loss",
+                "losses",
+                "negative",
+                "rejection",
+                "rejected",
+                "ban",
+                "banned",
+                "lawsuit",
+                "hack",
+                "hacked",
+                "attack",
+                "risk",
+                "risks",
+                "warning",
+                "warnings",
+                "outflow",
+                "outflows",
+                "sell",
+                "selling",
+                "liquidation",
+                "liquidations",
+                "fraud",
+                "scam"
+            )
+
+        var positive = 0
+        var negative = 0
+
+        positiveWords.forEach { word ->
+            if (text.contains(word)) {
+                positive++
             }
         }
 
-        cleanTranslatedText(result.toString())
-    }.getOrDefault("")
-}
-
-private fun cleanTranslatedText(value: String): String {
-    return value
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
-}
-
-private fun buildSearchTerms(asset: String): String {
-    return when (asset) {
-        "BTC" -> "Bitcoin crypto"
-        "ETH" -> "Ethereum crypto"
-        "BNB" -> "BNB Binance crypto"
-        "SOL" -> "Solana crypto"
-        "XRP" -> "XRP Ripple crypto"
-        "ADA" -> "Cardano ADA crypto"
-        "DOGE" -> "Dogecoin DOGE crypto"
-        "TRX" -> "TRON TRX crypto"
-        "AVAX" -> "Avalanche AVAX crypto"
-        "LINK" -> "Chainlink LINK crypto"
-        "DOT" -> "Polkadot DOT crypto"
-        "MATIC", "POL" -> "Polygon MATIC POL crypto"
-        "LTC" -> "Litecoin LTC crypto"
-        "BCH" -> "Bitcoin Cash BCH crypto"
-        "UNI" -> "Uniswap UNI crypto"
-        "ATOM" -> "Cosmos ATOM crypto"
-        "NEAR" -> "NEAR Protocol crypto"
-        "APT" -> "Aptos APT crypto"
-        "ARB" -> "Arbitrum ARB crypto"
-        "OP" -> "Optimism OP crypto"
-        "SUI" -> "Sui crypto"
-        "TON" -> "Toncoin TON crypto"
-        "SHIB" -> "Shiba Inu SHIB crypto"
-        "PEPE" -> "PEPE crypto"
-        "FIL" -> "Filecoin FIL crypto"
-        "AAVE" -> "Aave crypto"
-        "MKR" -> "Maker MKR crypto"
-        "INJ" -> "Injective INJ crypto"
-        "RUNE" -> "THORChain RUNE crypto"
-        "IMX" -> "Immutable IMX crypto"
-        "SEI" -> "SEI crypto"
-        "TIA" -> "Celestia TIA crypto"
-        "WIF" -> "dogwifhat WIF crypto"
-        "BONK" -> "BONK crypto"
-        else -> "$asset crypto"
-    }
-}
-
-private fun parseRss(raw: String): List<NewsItem> {
-    val result = mutableListOf<NewsItem>()
-
-    val itemRegex = Regex(
-        pattern = "<item>(.*?)</item>",
-        options = setOf(
-            RegexOption.IGNORE_CASE,
-            RegexOption.DOT_MATCHES_ALL
-        )
-    )
-
-    val titleRegex = Regex(
-        "<title>(.*?)</title>",
-        setOf(
-            RegexOption.IGNORE_CASE,
-            RegexOption.DOT_MATCHES_ALL
-        )
-    )
-
-    val linkRegex = Regex(
-        "<link>(.*?)</link>",
-        setOf(
-            RegexOption.IGNORE_CASE,
-            RegexOption.DOT_MATCHES_ALL
-        )
-    )
-
-    val sourceRegex = Regex(
-        "<source[^>]*>(.*?)</source>",
-        setOf(
-            RegexOption.IGNORE_CASE,
-            RegexOption.DOT_MATCHES_ALL
-        )
-    )
-
-    val descriptionRegex = Regex(
-        "<description>(.*?)</description>",
-        setOf(
-            RegexOption.IGNORE_CASE,
-            RegexOption.DOT_MATCHES_ALL
-        )
-    )
-
-    itemRegex.findAll(raw).forEach { match ->
-        val block = match.groupValues.getOrNull(1)
-            ?: return@forEach
-
-        val title = titleRegex
-            .find(block)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.let(::cleanText)
-            .orEmpty()
-
-        if (title.isBlank()) return@forEach
-
-        val link = linkRegex
-            .find(block)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.let(::cleanText)
-            .orEmpty()
-
-        val source = sourceRegex
-            .find(block)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.let(::cleanText)
-            .orEmpty()
-
-        val description = descriptionRegex
-            .find(block)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.let(::cleanText)
-            .orEmpty()
-
-        result += NewsItem(
-            title = title,
-            source = source.ifBlank { "Google News" },
-            url = link,
-            sentiment = detectSentiment("$title $description"),
-            relevance = 0.0
-        )
-    }
-
-    return result
-}
-
-private fun cleanText(value: String): String {
-    return value
-        .replace("<![CDATA[", "")
-        .replace("]]>", "")
-        .replace(Regex("<[^>]*>"), " ")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
-}
-
-private fun normalizeAsset(symbol: String): String {
-    var value = symbol
-        .trim()
-        .uppercase()
-        .replace("/", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace(" ", "")
-
-    when {
-        value.endsWith("USDT") -> {
-            value = value.removeSuffix("USDT")
+        negativeWords.forEach { word ->
+            if (text.contains(word)) {
+                negative++
+            }
         }
 
-        value.endsWith("USD") -> {
-            value = value.removeSuffix("USD")
+        return when {
+            positive == 0 && negative == 0 -> 0
+
+            positive > negative ->
+                minOf(
+                    100,
+                    20 + (positive - negative) * 15
+                )
+
+            negative > positive ->
+                maxOf(
+                    -100,
+                    -20 - (negative - positive) * 15
+                )
+
+            else -> 0
         }
     }
 
-    return value
-}
+    private fun calculateNewsScore(
+        items: List<NewsItem>
+    ): Int {
+        if (items.isEmpty()) return 50
 
-private fun buildAliases(asset: String): Set<String> {
-    val result = mutableSetOf<String>()
+        val average =
+            items
+                .take(10)
+                .map { it.sentiment }
+                .average()
 
-    if (asset.isBlank()) return result
-
-    result += asset.lowercase()
-
-    when (asset) {
-        "BTC" -> {
-            result += "bitcoin"
-            result += "btc"
-        }
-
-        "ETH" -> {
-            result += "ethereum"
-            result += "ether"
-            result += "eth"
-        }
-
-        "BNB" -> {
-            result += "bnb"
-            result += "binance"
-            result += "binance coin"
-        }
-
-        "SOL" -> {
-            result += "solana"
-            result += "sol"
-        }
-
-        "XRP" -> {
-            result += "ripple"
-            result += "xrp"
-        }
-
-        "ADA" -> {
-            result += "cardano"
-            result += "ada"
-        }
-
-        "DOGE" -> {
-            result += "dogecoin"
-            result += "doge"
-        }
-
-        "TRX" -> {
-            result += "tron"
-            result += "trx"
-        }
-
-        "AVAX" -> {
-            result += "avalanche"
-            result += "avax"
-        }
-
-        "LINK" -> {
-            result += "chainlink"
-            result += "link"
-        }
-
-        "DOT" -> {
-            result += "polkadot"
-            result += "dot"
-        }
-
-        "MATIC", "POL" -> {
-            result += "polygon"
-            result += "matic"
-            result += "pol"
-        }
-
-        "LTC" -> {
-            result += "litecoin"
-            result += "ltc"
-        }
-
-        "BCH" -> {
-            result += "bitcoin cash"
-            result += "bch"
-        }
-
-        "UNI" -> {
-            result += "uniswap"
-            result += "uni"
-        }
-
-        "ATOM" -> {
-            result += "cosmos"
-            result += "atom"
-        }
-
-        "NEAR" -> {
-            result += "near protocol"
-            result += "near"
-        }
-
-        "APT" -> {
-            result += "aptos"
-            result += "apt"
-        }
-
-        "ARB" -> {
-            result += "arbitrum"
-            result += "arb"
-        }
-
-        "OP" -> {
-            result += "optimism"
-            result += "op"
-        }
-
-        "SUI" -> {
-            result += "sui"
-        }
-
-        "TON" -> {
-            result += "toncoin"
-            result += "ton"
-        }
-
-        "SHIB" -> {
-            result += "shiba inu"
-            result += "shib"
-        }
-
-        "PEPE" -> {
-            result += "pepe"
-        }
-
-        "FIL" -> {
-            result += "filecoin"
-            result += "fil"
-        }
-
-        "AAVE" -> {
-            result += "aave"
-        }
-
-        "MKR" -> {
-            result += "maker"
-            result += "makerdao"
-            result += "mkr"
-        }
-
-        "INJ" -> {
-            result += "injective"
-            result += "inj"
-        }
-
-        "RUNE" -> {
-            result += "thorchain"
-            result += "rune"
-        }
-
-        "IMX" -> {
-            result += "immutable"
-            result += "immutable x"
-            result += "imx"
-        }
-
-        "SEI" -> {
-            result += "sei"
-        }
-
-        "TIA" -> {
-            result += "celestia"
-            result += "tia"
-        }
-
-        "WIF" -> {
-            result += "dogwifhat"
-            result += "wif"
-        }
-
-        "BONK" -> {
-            result += "bonk"
+        return when {
+            average >= 60 -> 90
+            average >= 35 -> 80
+            average >= 15 -> 70
+            average >= 5 -> 60
+            average <= -60 -> 10
+            average <= -35 -> 20
+            average <= -15 -> 30
+            average <= -5 -> 40
+            else -> 50
         }
     }
 
-    return result
-}
-
-private fun calculateRelevance(
-    item: NewsItem,
-    aliases: Set<String>
-): Double {
-    val text = item.title.lowercase()
-    var score = 0.0
-
-    aliases.forEach { alias ->
-        if (text.contains(alias)) {
-            score += 10.0
+    private fun calculateConfidence(
+        items: List<NewsItem>
+    ): Int {
+        return when {
+            items.size >= 8 -> 85
+            items.size >= 5 -> 75
+            items.size >= 3 -> 60
+            items.size >= 1 -> 40
+            else -> 20
         }
     }
 
-    if (score >= 10.0) {
-        score += 10.0
+    private fun buildSearchQuery(
+        symbol: String
+    ): String {
+        val coin =
+            symbol
+                .removeSuffix("USDT")
+                .removeSuffix("USD")
+                .trim()
+
+        return "$coin cryptocurrency crypto"
     }
 
-    return score
-}
-
-private fun detectSentiment(text: String): Int {
-    val value = text.lowercase()
-
-    val bullish = listOf(
-        "surge",
-        "rally",
-        "rising",
-        "rise",
-        "gain",
-        "gains",
-        "bullish",
-        "breakout",
-        "record high",
-        "all-time high",
-        "adoption",
-        "approval",
-        "approved",
-        "inflow",
-        "inflows",
-        "growth",
-        "strong",
-        "positive",
-        "optimistic",
-        "buy",
-        "buying",
-        "accumulate"
-    )
-
-    val bearish = listOf(
-        "drop",
-        "fall",
-        "falling",
-        "decline",
-        "bearish",
-        "selloff",
-        "sell-off",
-        "crash",
-        "plunge",
-        "loss",
-        "losses",
-        "outflow",
-        "outflows",
-        "hack",
-        "exploit",
-        "lawsuit",
-        "ban",
-        "banned",
-        "risk",
-        "weak",
-        "negative",
-        "liquidation"
-    )
-
-    var positive = 0
-    var negative = 0
-
-    bullish.forEach {
-        if (value.contains(it)) {
-            positive++
-        }
+    private fun normalizeSymbol(
+        input: String
+    ): String {
+        return input
+            .trim()
+            .uppercase()
+            .replace("/", "")
+            .replace("-", "")
+            .replace(" ", "")
+            .let { symbol ->
+                when {
+                    symbol.endsWith("USDT") -> symbol
+                    symbol.endsWith("USD") ->
+                        symbol.removeSuffix("USD") + "USDT"
+                    else ->
+                        symbol + "USDT"
+                }
+            }
     }
-
-    bearish.forEach {
-        if (value.contains(it)) {
-            negative++
-        }
-    }
-
-    return when {
-        positive > negative -> 100
-        negative > positive -> -100
-        else -> 0
-    }
-}
-
-private fun sentimentWeight(sentiment: Int): Int {
-    return when {
-        sentiment > 0 -> 2
-        sentiment < 0 -> 1
-        else -> 0
-    }
-}
-
-private fun calculateNewsScore(
-    items: List<NewsItem>
-): Int {
-    if (items.isEmpty()) return 50
-
-    var positive = 0
-    var negative = 0
-
-    items.forEach {
-        when {
-            it.sentiment > 0 -> positive++
-            it.sentiment < 0 -> negative++
-        }
-    }
-
-    val total = items.size.toDouble()
-
-    return (
-        50.0 +
-            (positive / total) * 35.0 -
-            (negative / total) * 35.0
-        )
-        .toInt()
-        .coerceIn(0, 100)
-}
-
-private fun calculateConfidence(
-    totalArticles: Int,
-    selectedArticles: Int
-): Int {
-    var confidence = 35
-
-    if (totalArticles >= 20) {
-        confidence += 20
-    } else if (totalArticles >= 10) {
-        confidence += 10
-    }
-
-    if (selectedArticles >= 5) {
-        confidence += 35
-    } else if (selectedArticles >= 3) {
-        confidence += 25
-    } else if (selectedArticles >= 1) {
-        confidence += 10
-    }
-
-    return confidence.coerceIn(0, 100)
-}
-
-private fun emptySnapshot(): NewsSnapshot {
-    return NewsSnapshot(
-        score = 50,
-        confidence = 0,
-        items = emptyList()
-    )
-}
-
 }
 
 private interface GoogleNewsApi {
 
-@GET("rss/search")
-suspend fun search(
-    @Query("q") query: String,
-    @Query("hl") language: String,
-    @Query("gl") country: String,
-    @Query("ceid") edition: String
-): ResponseBody
-
+    @GET("rss/search")
+    suspend fun search(
+        @Query("q", encoded = true) query: String
+    ): ResponseBody
 }
 
 private interface GoogleTranslateApi {
 
-@GET("translate_a/single")
-suspend fun translate(
-    @Query("client") client: String,
-    @Query("sl") sourceLanguage: String,
-    @Query("tl") targetLanguage: String,
-    @Query("dt") format: String,
-    @Query("q") text: String
-): ResponseBody
-
+    @Headers(
+        "User-Agent: Mozilla/5.0",
+        "Accept: application/json,text/plain,*/*"
+    )
+    @GET("translate_a/single")
+    suspend fun translate(
+        @Query("client") client: String,
+        @Query("sl") sourceLanguage: String,
+        @Query("tl") targetLanguage: String,
+        @Query("dt") format: String,
+        @Query("q") text: String,
+        @Query("html") html: String,
+        @Query("ie") inputEncoding: String,
+        @Query("oe") outputEncoding: String
+    ): ResponseBody
 }
+
+private interface MyMemoryApi {
+
+    @GET("get")
+    suspend fun translate(
+        @Query("q") query: String,
+        @Query("langpair") languagePair: String
+    ): MyMemoryResponse
+}
+
+private data class MyMemoryResponse(
+    val responseData: MyMemoryTranslation?
+)
+
+private data class MyMemoryTranslation(
+    val translatedText: String?
+)
