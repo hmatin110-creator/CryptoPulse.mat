@@ -1700,7 +1700,7 @@ private fun effectiveQuoteVolume(
     }
 
 private fun cmf(
-    candles: List<Candle
+    candles: List<Candle>
 ): Double {
 
     var money = 0.0
