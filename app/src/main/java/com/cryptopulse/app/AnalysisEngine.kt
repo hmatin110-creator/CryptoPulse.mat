@@ -597,15 +597,6 @@ object AnalysisEngine {
                 signal
             )
 
-        /*
-         * ---------------------------------------------------------
-         * محدوده معامله در reasons
-         * ---------------------------------------------------------
-         *
-         * این بخش علاوه بر finalAnalysis در reasons نیز قرار می‌گیرد
-         * تا اگر رابط کاربری فقط reasons را نمایش دهد، محدوده معامله
-         * همچنان برای کاربر قابل مشاهده باشد.
-         */
         if (plan != null) {
 
             when {
@@ -816,11 +807,6 @@ object AnalysisEngine {
                 "هشدار: واگرایی با جهت اصلی روند هم‌جهت نیست"
         }
 
-        /*
-         * ---------------------------------------------------------
-         * محدوده معامله در تحلیل نهایی
-         * ---------------------------------------------------------
-         */
         when {
 
             (
@@ -2033,7 +2019,7 @@ object AnalysisEngine {
     }
 
     private fun analyzeDivergence(
-        candles: List<Candle
+        candles: List<Candle>
     ): DivergenceResult {
 
         if (candles.size < 50) {
@@ -2511,4 +2497,3 @@ object AnalysisEngine {
         return result
     }
 }
-    
