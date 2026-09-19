@@ -155,7 +155,8 @@ data class AnalysisResult(
 
     val tradePlan: TradePlan? = null,
 
-    val finalAnalysis: String = "تحلیل نهایی: داده کافی برای جمع‌بندی وجود ندارد"
+    val finalAnalysis: String =
+        "تحلیل نهایی: داده کافی برای جمع‌بندی وجود ندارد"
 )
 
 data class MarketFlowData(
@@ -292,15 +293,6 @@ object AnalysisEngine {
             core.tech <= 35 &&
                 weightedTimeframe <= 40
 
-        /*
-         * تضاد جدی:
-         *
-         * روند صعودی ولی خروج سنگین
-         * یا
-         * روند نزولی ولی ورود سنگین
-         *
-         * در این حالت سیگنال نباید به‌سادگی STRONG شود.
-         */
         val moneyConflict =
             (
                 bullishTechnical &&
@@ -311,10 +303,6 @@ object AnalysisEngine {
                         heavyInflowPeriods >= 2
                 )
 
-        /*
-         * ورود/خروج غیرعادی در چند بازه
-         * نسبت به یک بازه معمولی اهمیت بیشتری دارد.
-         */
         if (heavyInflowPeriods >= 2) {
             score += 6
         }
@@ -323,9 +311,6 @@ object AnalysisEngine {
             score -= 6
         }
 
-        /*
-         * تأیید روند توسط جریان پول.
-         */
         if (
             bullishTechnical &&
             bullishMoney
@@ -340,9 +325,6 @@ object AnalysisEngine {
             score -= 4
         }
 
-        /*
-         * شکست ساختار همراه با جریان پول.
-         */
         if (
             structure.breakout &&
             heavyInflowPeriods >= 1
@@ -357,10 +339,6 @@ object AnalysisEngine {
             score -= 4
         }
 
-        /*
-         * واگرایی نیز در صورت تضاد با روند،
-         * مانع Strong شدن سیگنال می‌شود.
-         */
         val divergenceConflict =
             (
                 bullishTechnical &&
@@ -386,10 +364,6 @@ object AnalysisEngine {
                 }
         }
 
-        /*
-         * تضاد Money Flow با تکنیکال
-         * سیگنال را به محدوده Hold نزدیک می‌کند.
-         */
         if (moneyConflict) {
 
             score =
@@ -405,10 +379,6 @@ object AnalysisEngine {
                 }
         }
 
-        /*
-         * خبر فقط زمانی اثر قابل‌توجه دارد
-         * که Confidence خبر بالا باشد.
-         */
         if (
             newsConfidence >= 65 &&
             newsScore <= 25 &&
@@ -442,9 +412,6 @@ object AnalysisEngine {
                 ).roundToInt()
                 .coerceIn(1, 98)
 
-        /*
-         * اندازه‌گیری توافق مؤلفه‌ها.
-         */
         val bullishComponents =
             listOf(
                 core.tech >= 60,
@@ -499,27 +466,6 @@ object AnalysisEngine {
         val confidence =
             baseConfidence.coerceIn(0, 98)
 
-        /*
-         * ---------------------------------------------------------
-         * FINAL SIGNAL
-         * ---------------------------------------------------------
-         *
-         * STRONG BUY:
-         * - امتیاز بالا
-         * - اعتماد بالا
-         * - ورود سنگین در چند بازه
-         * - تکنیکال و تایم‌فریم تأییدکننده
-         * - تضاد جدی وجود نداشته باشد
-         *
-         * BUY:
-         * - شرایط صعودی مناسب
-         *
-         * HOLD:
-         * - شرایط متناقض یا فاقد تأیید کافی
-         *
-         * SELL / STRONG SELL:
-         * - قرینه حالت خرید
-         */
         val signal =
             when {
 
@@ -644,9 +590,6 @@ object AnalysisEngine {
                 "اعتماد تحلیل خبر: $newsConfidence/100"
         }
 
-        /*
-         * Trade Plan فقط برای BUY/SELL.
-         */
         val plan =
             buildTradePlan(
                 candles,
@@ -654,9 +597,6 @@ object AnalysisEngine {
                 signal
             )
 
-        /*
-         * تحلیل نهایی قابل نمایش در UI.
-         */
         val finalAnalysis =
             buildFinalAnalysis(
                 signal = signal,
@@ -670,7 +610,8 @@ object AnalysisEngine {
                 heavyInflowPeriods = heavyInflowPeriods,
                 heavyOutflowPeriods = heavyOutflowPeriods,
                 moneyConflict = moneyConflict,
-                divergenceConflict = divergenceConflict
+                divergenceConflict = divergenceConflict,
+                tradePlan = plan
             )
 
         return AnalysisResult(
@@ -705,7 +646,8 @@ object AnalysisEngine {
         heavyInflowPeriods: Int,
         heavyOutflowPeriods: Int,
         moneyConflict: Boolean,
-        divergenceConflict: Boolean
+        divergenceConflict: Boolean,
+        tradePlan: TradePlan?
     ): String {
 
         val signalText =
@@ -807,7 +749,127 @@ object AnalysisEngine {
                 "هشدار: واگرایی با جهت اصلی روند هم‌جهت نیست"
         }
 
+        /*
+         * ---------------------------------------------------------
+         * محدوده معامله در تحلیل نهایی
+         * ---------------------------------------------------------
+         *
+         * BUY / STRONG BUY:
+         * محدوده ورود + اهداف خروج + حد خروج اضطراری
+         *
+         * SELL / STRONG SELL:
+         * محدوده خروج + اهداف نزولی + حد خروج اضطراری
+         *
+         * HOLD:
+         * هیچ محدوده معامله‌ای نمایش داده نمی‌شود.
+         */
+        when {
+
+            (
+                signal == "BUY" ||
+                    signal == "STRONG BUY"
+                ) &&
+                tradePlan != null -> {
+
+                parts +=
+                    "🎯 محدوده ورود: " +
+                        "${formatPrice(tradePlan.entryLow)} تا " +
+                        formatPrice(tradePlan.entryHigh)
+
+                parts +=
+                    "🎯 هدف خروج ۱: " +
+                        formatPrice(tradePlan.tp1)
+
+                parts +=
+                    "🎯 هدف خروج ۲: " +
+                        formatPrice(tradePlan.tp2)
+
+                parts +=
+                    "🛑 حد خروج اضطراری: " +
+                        formatPrice(tradePlan.stopLoss)
+
+                parts +=
+                    "📊 نسبت ریسک به بازده: " +
+                        String.format(
+                            java.util.Locale.US,
+                            "%.2f",
+                            tradePlan.riskReward
+                        )
+            }
+
+            (
+                signal == "SELL" ||
+                    signal == "STRONG SELL"
+                ) &&
+                tradePlan != null -> {
+
+                parts +=
+                    "🎯 محدوده خروج: " +
+                        "${formatPrice(tradePlan.tp2)} تا " +
+                        formatPrice(tradePlan.tp1)
+
+                parts +=
+                    "📉 هدف نزولی ۱: " +
+                        formatPrice(tradePlan.tp1)
+
+                parts +=
+                    "📉 هدف نزولی ۲: " +
+                        formatPrice(tradePlan.tp2)
+
+                parts +=
+                    "🛑 حد خروج اضطراری: " +
+                        formatPrice(tradePlan.stopLoss)
+
+                parts +=
+                    "📊 نسبت ریسک به بازده: " +
+                        String.format(
+                            java.util.Locale.US,
+                            "%.2f",
+                            tradePlan.riskReward
+                        )
+            }
+        }
+
         return parts.joinToString(" • ")
+    }
+
+    private fun formatPrice(
+        value: Double
+    ): String {
+
+        if (!value.isFinite()) {
+            return "-"
+        }
+
+        return when {
+            value >= 1000 ->
+                String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    value
+                )
+
+            value >= 1 ->
+                String.format(
+                    java.util.Locale.US,
+                    "%.4f",
+                    value
+                )
+
+            value >= 0.01 ->
+                String.format(
+                    java.util.Locale.US,
+                    "%.6f",
+                    value
+                )
+
+            else ->
+                String.format(
+                    java.util.Locale.US,
+                    "%.8f",
+                    value
+                )
+        }
     }
 
     private data class Core(
@@ -1584,17 +1646,17 @@ object AnalysisEngine {
                     candle.close
 
             else ->
-    0.0
-}
+                0.0
+        }
 
-private fun cmf(
-    candles: List<Candle>
-): Double {
+    private fun cmf(
+        candles: List<Candle>
+    ): Double {
 
-    var money = 0.0
-    var volume = 0.0
+        var money = 0.0
+        var volume = 0.0
 
-    candles.forEach { c ->
+        candles.forEach { c ->
 
             val range =
                 (
