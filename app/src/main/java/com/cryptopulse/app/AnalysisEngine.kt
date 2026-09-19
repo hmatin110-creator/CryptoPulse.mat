@@ -1702,7 +1702,7 @@ object AnalysisEngine {
         }
 
     private fun cmf(
-        candles: List<Candle
+        candles: List<Candle>
     ): Double {
 
         var money = 0.0
@@ -2033,7 +2033,7 @@ object AnalysisEngine {
     }
 
     private fun analyzeDivergence(
-        candles: List<Candle>
+        candles: List<Candle
     ): DivergenceResult {
 
         if (candles.size < 50) {
@@ -2300,18 +2300,30 @@ object AnalysisEngine {
             signal == "STRONG BUY"
         ) {
 
-            val entryLow =
+            val rawEntryLow =
                 max(
                     structure.support,
                     last -
                         atrValue * 0.75
                 )
 
-            val entryHigh =
+            val rawEntryHigh =
                 min(
                     last +
                         atrValue * 0.15,
                     last * 1.02
+                )
+
+            val entryLow =
+                min(
+                    rawEntryLow,
+                    rawEntryHigh
+                )
+
+            val entryHigh =
+                max(
+                    rawEntryLow,
+                    rawEntryHigh
                 )
 
             val sl =
@@ -2353,18 +2365,30 @@ object AnalysisEngine {
             )
         }
 
-        val entryLow =
+        val rawEntryLow =
             max(
                 last -
                     atrValue * 0.15,
                 last * 0.98
             )
 
-        val entryHigh =
+        val rawEntryHigh =
             min(
                 structure.resistance,
                 last +
                     atrValue * 0.75
+            )
+
+        val entryLow =
+            min(
+                rawEntryLow,
+                rawEntryHigh
+            )
+
+        val entryHigh =
+            max(
+                rawEntryLow,
+                rawEntryHigh
             )
 
         val sl =
@@ -2487,3 +2511,4 @@ object AnalysisEngine {
         return result
     }
 }
+    
