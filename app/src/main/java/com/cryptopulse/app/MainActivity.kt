@@ -63,6 +63,10 @@ private fun CryptoAnalysisScreen() {
 
     val scope = rememberCoroutineScope()
 
+    var currentPage by remember {
+        mutableStateOf("home")
+    }
+
     var symbol by remember {
         mutableStateOf("BTCUSDT")
     }
@@ -96,56 +100,78 @@ private fun CryptoAnalysisScreen() {
             loading = true
             analysisResult = null
             newsSnapshot = null
-            scanResult = null
 
             message = "در حال دریافت اطلاعات $symbol ..."
 
             try {
 
-                val normalized = normalizeSymbol(symbol)
+                val normalized =
+                    normalizeSymbol(symbol)
 
-                val repository = LiveRepository()
+                val repository =
+                    LiveRepository()
 
-                val snapshot = repository.load(normalized)
+                val snapshot =
+                    repository.load(normalized)
 
-                message = "داده دریافت شد؛ در حال تحلیل..."
+                message =
+                    "داده دریافت شد؛ در حال تحلیل..."
 
                 val loadedNews =
                     NewsRepository().load(normalized)
 
-                newsSnapshot = loadedNews
+                newsSnapshot =
+                    loadedNews
 
-                val flow = MarketFlowData(
-                    openInterest = snapshot.openInterest,
-                    fundingRate = snapshot.fundingRate,
-                    openInterestHistory = snapshot.openInterestHistory,
-                    longShortHistory = snapshot.longShortHistory,
-                    takerVolumeHistory = snapshot.takerVolumeHistory
-                )
+                val flow =
+                    MarketFlowData(
+                        openInterest =
+                            snapshot.openInterest,
+                        fundingRate =
+                            snapshot.fundingRate,
+                        openInterestHistory =
+                            snapshot.openInterestHistory,
+                        longShortHistory =
+                            snapshot.longShortHistory,
+                        takerVolumeHistory =
+                            snapshot.takerVolumeHistory
+                    )
 
-                val result = AnalysisEngine.analyze(
-                    candles = snapshot.candles,
-                    flow = flow,
-                    newsScore = loadedNews.score,
-                    newsConfidence = loadedNews.confidence,
-                    btcCandles = snapshot.btcCandles
-                )
+                val result =
+                    AnalysisEngine.analyze(
+                        candles =
+                            snapshot.candles,
+                        flow =
+                            flow,
+                        newsScore =
+                            loadedNews.score,
+                        newsConfidence =
+                            loadedNews.confidence,
+                        btcCandles =
+                            snapshot.btcCandles
+                    )
 
-                analysisResult = result
+                analysisResult =
+                    result
 
-                message = "تحلیل $normalized کامل شد."
+                message =
+                    "تحلیل $normalized کامل شد."
 
             } catch (e: Exception) {
 
-                analysisResult = null
-                newsSnapshot = null
+                analysisResult =
+                    null
+
+                newsSnapshot =
+                    null
 
                 message =
                     "خطا: ${e.message ?: "خطای نامشخص"}"
 
             } finally {
 
-                loading = false
+                loading =
+                    false
             }
         }
     }
@@ -154,14 +180,26 @@ private fun CryptoAnalysisScreen() {
 
         if (loading) return
 
+        currentPage =
+            "scan"
+
         scope.launch {
 
-            loading = true
-            analysisResult = null
-            newsSnapshot = null
-            scanResult = null
+            loading =
+                true
 
-            message = "در حال اسکن بازار..."
+            /*
+             * عمداً scanResult را پاک نمی‌کنیم.
+             *
+             * اگر نتیجه قبلی وجود داشته باشد، تا زمانی که
+             * نتیجه جدید آماده شود همچنان در صفحه اسکن باقی می‌ماند.
+             *
+             * همچنین اگر کاربر به خانه برود، این coroutine
+             * همچنان در scope همین صفحه اصلی اجرا می‌شود.
+             */
+
+            message =
+                "در حال اسکن بازار..."
 
             try {
 
@@ -172,7 +210,8 @@ private fun CryptoAnalysisScreen() {
                         enrichLimit = 100
                     )
 
-                scanResult = result
+                scanResult =
+                    result
 
                 message =
                     "اسکن کامل شد؛ ${result.analyzedCount} ارز تحلیل شدند."
@@ -184,19 +223,140 @@ private fun CryptoAnalysisScreen() {
 
             } finally {
 
-                loading = false
+                loading =
+                    false
             }
         }
     }
 
+    Column(
+        modifier =
+            Modifier.fillMaxSize()
+    ) {
+
+        Box(
+            modifier =
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+        ) {
+
+            when (currentPage) {
+
+                "home" -> {
+
+                    HomePage(
+                        symbol =
+                            symbol,
+                        loading =
+                            loading,
+                        message =
+                            message,
+                        analysisResult =
+                            analysisResult,
+                        newsSnapshot =
+                            newsSnapshot,
+                        onSymbolChange = {
+                            symbol =
+                                it
+                                    .uppercase(Locale.US)
+                                    .replace(" ", "")
+                        },
+                        onAnalyze = {
+                            analyzeCoin()
+                        },
+                        onOpenScanner = {
+                            currentPage =
+                                "scan"
+                        }
+                    )
+                }
+
+                "scan" -> {
+
+                    MarketScanPage(
+                        loading =
+                            loading,
+                        message =
+                            message,
+                        scanResult =
+                            scanResult,
+                        onBackHome = {
+                            currentPage =
+                                "home"
+                        },
+                        onScan = {
+                            scanMarket()
+                        }
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        MaterialTheme.colorScheme.surface
+                    )
+                    .padding(
+                        horizontal = 12.dp,
+                        vertical = 8.dp
+                    ),
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+
+            Button(
+                onClick = {
+                    currentPage =
+                        "home"
+                },
+                modifier =
+                    Modifier.weight(1f)
+            ) {
+
+                Text("🏠 خانه")
+            }
+
+            OutlinedButton(
+                onClick = {
+                    currentPage =
+                        "scan"
+                },
+                modifier =
+                    Modifier.weight(1f)
+            ) {
+
+                Text("📊 اسکن بازار")
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomePage(
+    symbol: String,
+    loading: Boolean,
+    message: String,
+    analysisResult: AnalysisResult?,
+    newsSnapshot: NewsSnapshot?,
+    onSymbolChange: (String) -> Unit,
+    onAnalyze: () -> Unit,
+    onOpenScanner: () -> Unit
+) {
+
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(
-                horizontal = 12.dp,
-                vertical = 10.dp
-            ),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 10.dp
+                ),
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
     ) {
 
         item {
@@ -205,26 +365,25 @@ private fun CryptoAnalysisScreen() {
 
         item {
             SearchSection(
-                symbol = symbol,
-                loading = loading,
-                onSymbolChange = {
-                    symbol = it
-                        .uppercase(Locale.US)
-                        .replace(" ", "")
-                },
-                onAnalyze = {
-                    analyzeCoin()
-                },
-                onScan = {
-                    scanMarket()
-                }
+                symbol =
+                    symbol,
+                loading =
+                    loading,
+                onSymbolChange =
+                    onSymbolChange,
+                onAnalyze =
+                    onAnalyze,
+                onScan =
+                    onOpenScanner
             )
         }
 
         item {
             StatusSection(
-                message = message,
-                loading = loading
+                message =
+                    message,
+                loading =
+                    loading
             )
         }
 
@@ -240,8 +399,10 @@ private fun CryptoAnalysisScreen() {
 
             item {
                 NewsAnalysisCard(
-                    result = result,
-                    newsSnapshot = newsSnapshot
+                    result =
+                        result,
+                    newsSnapshot =
+                        newsSnapshot
                 )
             }
 
@@ -258,6 +419,174 @@ private fun CryptoAnalysisScreen() {
             }
         }
 
+        item {
+
+            Spacer(
+                modifier =
+                    Modifier.height(8.dp)
+            )
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+            ) {
+
+                Text(
+                    text =
+                        "⚠️ نتایج تحلیل آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                    modifier =
+                        Modifier.padding(14.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarketScanPage(
+    loading: Boolean,
+    message: String,
+    scanResult: MarketScanResult?,
+    onBackHome: () -> Unit,
+    onScan: () -> Unit
+) {
+
+    LazyColumn(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 10.dp
+                ),
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
+    ) {
+
+        item {
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(8.dp),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+
+                    OutlinedButton(
+                        onClick =
+                            onBackHome
+                    ) {
+
+                        Text("← خانه")
+                    }
+
+                    Text(
+                        text =
+                            "📊 اسکن بازار",
+                        style =
+                            MaterialTheme.typography.titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        item {
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+
+                Column(
+                    modifier =
+                        Modifier.padding(14.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
+                ) {
+
+                    Text(
+                        text =
+                            if (loading) {
+                                "🔄 اسکن بازار در حال انجام است..."
+                            } else {
+                                "📊 اسکن بازار"
+                            },
+                        style =
+                            MaterialTheme.typography.titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        text =
+                            message,
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+
+                    Button(
+                        onClick =
+                            onScan,
+                        enabled =
+                            !loading,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                    ) {
+
+                        if (loading) {
+
+                            CircularProgressIndicator(
+                                modifier =
+                                    Modifier
+                                        .width(20.dp)
+                                        .height(20.dp),
+                                strokeWidth =
+                                    2.dp
+                            )
+
+                            Spacer(
+                                modifier =
+                                    Modifier.width(8.dp)
+                            )
+                        }
+
+                        Text(
+                            text =
+                                if (loading) {
+                                    "اسکن در حال انجام..."
+                                } else {
+                                    "شروع اسکن بازار"
+                                }
+                        )
+                    }
+                }
+            }
+        }
+
+        /*
+         * تمام اطلاعاتی که قبلاً در صفحه اصلی
+         * برای اسکن بازار نمایش داده می‌شد، اینجا
+         * بدون حذف نگه داشته شده است.
+         */
+
         scanResult?.let { scan ->
 
             item {
@@ -265,12 +594,21 @@ private fun CryptoAnalysisScreen() {
             }
 
             item {
-                SectionTitle("🔥 Top 10 کل بازار")
+
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
+
+                SectionTitle(
+                    "🔥 Top 10 کل بازار"
+                )
             }
 
             if (scan.top10All.isEmpty()) {
 
                 item {
+
                     EmptyCard(
                         "هیچ ارزی با پیشنهاد خرید پیدا نشد."
                     )
@@ -279,8 +617,10 @@ private fun CryptoAnalysisScreen() {
             } else {
 
                 item {
+
                     CandidateTable(
-                        candidates = scan.top10All
+                        candidates =
+                            scan.top10All
                     )
                 }
             }
@@ -288,7 +628,8 @@ private fun CryptoAnalysisScreen() {
             item {
 
                 Spacer(
-                    modifier = Modifier.height(4.dp)
+                    modifier =
+                        Modifier.height(4.dp)
                 )
 
                 SectionTitle(
@@ -299,6 +640,7 @@ private fun CryptoAnalysisScreen() {
             if (scan.top10Top100.isEmpty()) {
 
                 item {
+
                     EmptyCard(
                         "برای این بخش پیشنهاد خریدی وجود ندارد."
                     )
@@ -307,8 +649,10 @@ private fun CryptoAnalysisScreen() {
             } else {
 
                 item {
+
                     CandidateTable(
-                        candidates = scan.top10Top100
+                        candidates =
+                            scan.top10Top100
                     )
                 }
             }
@@ -317,22 +661,27 @@ private fun CryptoAnalysisScreen() {
         item {
 
             Spacer(
-                modifier = Modifier.height(8.dp)
+                modifier =
+                    Modifier.height(8.dp)
             )
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                modifier =
+                    Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
             ) {
 
                 Text(
                     text =
-                        "⚠️ نتایج تحلیل آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
-                    modifier = Modifier.padding(14.dp),
-                    style = MaterialTheme.typography.bodySmall
+                        "⚠️ نتایج اسکن آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                    modifier =
+                        Modifier.padding(14.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
                 )
             }
         }
@@ -343,29 +692,38 @@ private fun CryptoAnalysisScreen() {
 private fun HeaderSection() {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier =
+                Modifier.padding(18.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(6.dp)
         ) {
 
             Text(
-                text = "Crypto110",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
+                text =
+                    "Crypto110",
+                style =
+                    MaterialTheme.typography.headlineMedium,
+                fontWeight =
+                    FontWeight.Bold
             )
 
             Text(
-                text = "تحلیل هوشمند بازار ارزهای دیجیتال",
-                style = MaterialTheme.typography.titleMedium
+                text =
+                    "تحلیل هوشمند بازار ارزهای دیجیتال",
+                style =
+                    MaterialTheme.typography.titleMedium
             )
 
             Text(
                 text =
                     "Technical • Money Flow • News • Structure • BTC Regime",
-                style = MaterialTheme.typography.bodySmall
+                style =
+                    MaterialTheme.typography.bodySmall
             )
         }
     }
@@ -381,51 +739,71 @@ private fun SearchSection(
 ) {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier =
+                Modifier.padding(14.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(10.dp)
         ) {
 
             Text(
-                text = "🔎 تحلیل ارز",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                text =
+                    "🔎 تحلیل ارز",
+                style =
+                    MaterialTheme.typography.titleLarge,
+                fontWeight =
+                    FontWeight.Bold
             )
 
             OutlinedTextField(
-                value = symbol,
-                onValueChange = onSymbolChange,
-                modifier = Modifier.fillMaxWidth(),
+                value =
+                    symbol,
+                onValueChange =
+                    onSymbolChange,
+                modifier =
+                    Modifier.fillMaxWidth(),
                 label = {
                     Text("نماد ارز")
                 },
                 placeholder = {
                     Text("مثلاً BTCUSDT")
                 },
-                singleLine = true
+                singleLine =
+                    true
             )
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier =
+                    Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
             ) {
 
                 Button(
-                    onClick = onAnalyze,
-                    enabled = !loading,
-                    modifier = Modifier.weight(1f)
+                    onClick =
+                        onAnalyze,
+                    enabled =
+                        !loading,
+                    modifier =
+                        Modifier.weight(1f)
                 ) {
+
                     Text("تحلیل ارز")
                 }
 
                 OutlinedButton(
-                    onClick = onScan,
-                    enabled = !loading,
-                    modifier = Modifier.weight(1f)
+                    onClick =
+                        onScan,
+                    enabled =
+                        !loading,
+                    modifier =
+                        Modifier.weight(1f)
                 ) {
+
                     Text("اسکن بازار")
                 }
             }
@@ -440,37 +818,49 @@ private fun StatusSection(
 ) {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+            horizontalArrangement =
+                Arrangement.spacedBy(10.dp),
+            verticalAlignment =
+                Alignment.CenterVertically
         ) {
 
             if (loading) {
 
                 CircularProgressIndicator(
-                    modifier = Modifier
-                        .width(24.dp)
-                        .height(24.dp)
+                    modifier =
+                        Modifier
+                            .width(24.dp)
+                            .height(24.dp)
                 )
             }
 
             Column(
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement =
+                    Arrangement.spacedBy(2.dp)
             ) {
 
                 Text(
-                    text = "وضعیت",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    text =
+                        "وضعیت",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight =
+                        FontWeight.Bold
                 )
 
-                Text(text = message)
+                Text(
+                    text =
+                        message
+                )
             }
         }
     }
@@ -481,17 +871,20 @@ private fun FinalResultTable(
     result: AnalysisResult
 ) {
 
-    val signal = finalSignal(result)
+    val signal =
+        finalSignal(result)
 
     TableCard(
-        title = "🎯 تحلیل نهایی"
+        title =
+            "🎯 تحلیل نهایی"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
+            columns =
+                listOf(
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -506,7 +899,8 @@ private fun FinalResultTable(
                     "پیشنهاد نهایی" to 150.dp,
                     signal to 190.dp
                 ),
-                boldValue = true
+                boldValue =
+                    true
             )
 
             TableDataRow(
@@ -549,7 +943,8 @@ private fun FinalResultTable(
                     "News Score" to 150.dp,
                     "${result.news}/100" to 190.dp
                 ),
-                boldValue = true
+                boldValue =
+                    true
             )
 
             TableDataRow(
@@ -567,21 +962,25 @@ private fun TradePlanTable(
     result: AnalysisResult
 ) {
 
-    val plan = result.tradePlan
+    val plan =
+        result.tradePlan
 
-    val signal = finalSignal(result)
+    val signal =
+        finalSignal(result)
 
     TableCard(
-        title = "🎯 محدوده‌های خرید و فروش"
+        title =
+            "🎯 محدوده‌های خرید و فروش"
     ) {
 
         if (plan != null) {
 
             SharedTable(
-                columns = listOf(
-                    "مورد" to 175.dp,
-                    "مقدار" to 250.dp
-                )
+                columns =
+                    listOf(
+                        "مورد" to 175.dp,
+                        "مقدار" to 250.dp
+                    )
             ) {
 
                 TableHeaderRow(
@@ -596,7 +995,8 @@ private fun TradePlanTable(
                         "سیگنال" to 175.dp,
                         signal to 250.dp
                     ),
-                    boldValue = true
+                    boldValue =
+                        true
                 )
 
                 TableDataRow(
@@ -604,7 +1004,8 @@ private fun TradePlanTable(
                         "🟢 محدوده ورود" to 175.dp,
                         "${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}" to 250.dp
                     ),
-                    boldValue = true
+                    boldValue =
+                        true
                 )
 
                 TableDataRow(
@@ -637,17 +1038,20 @@ private fun TradePlanTable(
             }
 
             Spacer(
-                modifier = Modifier.height(8.dp)
+                modifier =
+                    Modifier.height(8.dp)
             )
 
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
             ) {
 
                 Text(
@@ -662,18 +1066,14 @@ private fun TradePlanTable(
                             else ->
                                 "🟡 این محدوده بر اساس برنامه معامله فعلی محاسبه شده است."
                         },
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall
+                    modifier =
+                        Modifier.padding(12.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
                 )
             }
 
         } else {
-
-            /*
-             * در حالت HOLD، TradePlan از AnalysisEngine ممکن است null باشد.
-             * در این حالت به‌جای خالی گذاشتن جدول، حمایت و مقاومت واقعی
-             * تحلیل را به‌عنوان محدوده‌های احتمالی نمایش می‌دهیم.
-             */
 
             val support =
                 result.structure.support
@@ -682,18 +1082,21 @@ private fun TradePlanTable(
                 result.structure.resistance
 
             val validSupport =
-                support.isFinite() && support > 0.0
+                support.isFinite() &&
+                    support > 0.0
 
             val validResistance =
-                resistance.isFinite() && resistance > 0.0
+                resistance.isFinite() &&
+                    resistance > 0.0
 
             if (validSupport || validResistance) {
 
                 SharedTable(
-                    columns = listOf(
-                        "مورد" to 185.dp,
-                        "مقدار" to 250.dp
-                    )
+                    columns =
+                        listOf(
+                            "مورد" to 185.dp,
+                            "مقدار" to 250.dp
+                        )
                 ) {
 
                     TableHeaderRow(
@@ -708,7 +1111,8 @@ private fun TradePlanTable(
                             "سیگنال فعلی" to 185.dp,
                             signal to 250.dp
                         ),
-                        boldValue = true
+                        boldValue =
+                            true
                     )
 
                     if (validSupport) {
@@ -718,7 +1122,8 @@ private fun TradePlanTable(
                                 "🟢 محدوده احتمالی خرید" to 185.dp,
                                 formatPrice(support) to 250.dp
                             ),
-                            boldValue = true
+                            boldValue =
+                                true
                         )
                     }
 
@@ -729,11 +1134,15 @@ private fun TradePlanTable(
                                 "🔴 محدوده احتمالی فروش" to 185.dp,
                                 formatPrice(resistance) to 250.dp
                             ),
-                            boldValue = true
+                            boldValue =
+                                true
                         )
                     }
 
-                    if (validSupport && validResistance) {
+                    if (
+                        validSupport &&
+                        validResistance
+                    ) {
 
                         TableDataRow(
                             listOf(
@@ -752,34 +1161,40 @@ private fun TradePlanTable(
                 }
 
                 Spacer(
-                    modifier = Modifier.height(8.dp)
+                    modifier =
+                        Modifier.height(8.dp)
                 )
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor =
-                            MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.surfaceVariant
+                        )
                 ) {
 
                     Text(
                         text =
                             "🟡 سیگنال فعلی ورود قطعی را تأیید نکرده است؛ اعداد بالا محدوده‌های احتمالی حمایت و مقاومت هستند.",
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall
+                        modifier =
+                            Modifier.padding(12.dp),
+                        style =
+                            MaterialTheme.typography.bodySmall
                     )
                 }
 
             } else {
 
                 SharedTable(
-                    columns = listOf(
-                        "وضعیت" to 170.dp,
-                        "توضیح" to 270.dp
-                    )
+                    columns =
+                        listOf(
+                            "وضعیت" to 170.dp,
+                            "توضیح" to 270.dp
+                        )
                 ) {
 
                     TableHeaderRow(
@@ -794,7 +1209,8 @@ private fun TradePlanTable(
                             "سیگنال" to 170.dp,
                             signal to 270.dp
                         ),
-                        boldValue = true
+                        boldValue =
+                            true
                     )
 
                     TableDataRow(
@@ -822,40 +1238,48 @@ private fun NewsAnalysisCard(
     newsSnapshot: NewsSnapshot?
 ) {
 
-    val newsLabel = when {
+    val newsLabel =
+        when {
 
-        result.news >= 75 ->
-            "🟢 اخبار بسیار مثبت"
+            result.news >= 75 ->
+                "🟢 اخبار بسیار مثبت"
 
-        result.news >= 60 ->
-            "🟢 اخبار مثبت"
+            result.news >= 60 ->
+                "🟢 اخبار مثبت"
 
-        result.news >= 45 ->
-            "🟡 اخبار خنثی"
+            result.news >= 45 ->
+                "🟡 اخبار خنثی"
 
-        result.news >= 30 ->
-            "🟠 اخبار منفی"
+            result.news >= 30 ->
+                "🟠 اخبار منفی"
 
-        else ->
-            "🔴 اخبار بسیار منفی"
-    }
+            else ->
+                "🔴 اخبار بسیار منفی"
+        }
 
     val newsEffect =
         when {
-            result.news >= 70 -> "مثبت"
-            result.news <= 30 -> "منفی"
-            else -> "خنثی"
+            result.news >= 70 ->
+                "مثبت"
+
+            result.news <= 30 ->
+                "منفی"
+
+            else ->
+                "خنثی"
         }
 
     TableCard(
-        title = "📰 تحلیل اخبار"
+        title =
+            "📰 تحلیل اخبار"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
+            columns =
+                listOf(
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -870,7 +1294,8 @@ private fun NewsAnalysisCard(
                     "امتیاز اخبار" to 150.dp,
                     "${result.news}/100" to 190.dp
                 ),
-                boldValue = true
+                boldValue =
+                    true
             )
 
             TableDataRow(
@@ -896,17 +1321,22 @@ private fun NewsAnalysisCard(
         }
 
         Spacer(
-            modifier = Modifier.height(10.dp)
+            modifier =
+                Modifier.height(10.dp)
         )
 
         Text(
-            text = "📰 ۵ خبر مهم مرتبط",
-            modifier = Modifier.padding(
-                horizontal = 8.dp,
-                vertical = 4.dp
-            ),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
+            text =
+                "📰 ۵ خبر مهم مرتبط",
+            modifier =
+                Modifier.padding(
+                    horizontal = 8.dp,
+                    vertical = 4.dp
+                ),
+            style =
+                MaterialTheme.typography.titleMedium,
+            fontWeight =
+                FontWeight.Bold
         )
 
         val newsItems =
@@ -918,38 +1348,46 @@ private fun NewsAnalysisCard(
         if (newsItems.isEmpty()) {
 
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(4.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(4.dp),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
             ) {
 
                 Text(
                     text =
                         "برای این ارز خبر مرتبطی دریافت نشد.",
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall
+                    modifier =
+                        Modifier.padding(12.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
                 )
             }
 
         } else {
 
-            newsItems.forEachIndexed { index, item ->
+            newsItems.forEachIndexed {
+                    index,
+                    item ->
 
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            horizontal = 4.dp,
-                            vertical = 3.dp
-                        )
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 4.dp,
+                                vertical = 3.dp
+                            )
                 ) {
 
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier =
+                            Modifier.padding(12.dp),
                         verticalArrangement =
                             Arrangement.spacedBy(5.dp)
                     ) {
@@ -980,6 +1418,7 @@ private fun NewsAnalysisCard(
                             Text(
                                 text =
                                     when {
+
                                         item.sentiment >= 20 ->
                                             "🟢 مثبت"
 
@@ -1022,14 +1461,16 @@ private fun AnalysisTable(
         }
 
     TableCard(
-        title = "📊 جدول تحلیل بازار"
+        title =
+            "📊 جدول تحلیل بازار"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "بخش" to 170.dp,
-                "نتیجه" to 190.dp
-            )
+            columns =
+                listOf(
+                    "بخش" to 170.dp,
+                    "نتیجه" to 190.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1120,22 +1561,25 @@ private fun MoneyFlowTable(
     result: AnalysisResult
 ) {
 
-    val flow = result.moneyFlowDetails
+    val flow =
+        result.moneyFlowDetails
 
     TableCard(
-        title = "💰 جریان پول"
+        title =
+            "💰 جریان پول"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "دوره" to 85.dp,
-                "ورود" to 105.dp,
-                "ورود سنگین" to 105.dp,
-                "خروج" to 105.dp,
-                "خروج سنگین" to 105.dp,
-                "Net" to 105.dp,
-                "وضعیت" to 125.dp
-            )
+            columns =
+                listOf(
+                    "دوره" to 85.dp,
+                    "ورود" to 105.dp,
+                    "ورود سنگین" to 105.dp,
+                    "خروج" to 105.dp,
+                    "خروج سنگین" to 105.dp,
+                    "Net" to 105.dp,
+                    "وضعیت" to 125.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1163,7 +1607,8 @@ private fun MoneyFlowTable(
 
                 flow.periods.forEach { entry ->
 
-                    val period = entry.value
+                    val period =
+                        entry.value
 
                     val unusualInflowText =
                         if (period.unusualInflow > 0) {
@@ -1207,14 +1652,16 @@ private fun MoneyFlowTable(
         }
 
         Spacer(
-            modifier = Modifier.height(8.dp)
+            modifier =
+                Modifier.height(8.dp)
         )
 
         SharedTable(
-            columns = listOf(
-                "شاخص" to 170.dp,
-                "مقدار" to 190.dp
-            )
+            columns =
+                listOf(
+                    "شاخص" to 170.dp,
+                    "مقدار" to 190.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1229,7 +1676,8 @@ private fun MoneyFlowTable(
                     "وضعیت کلی" to 170.dp,
                     flow.label to 190.dp
                 ),
-                boldValue = true
+                boldValue =
+                    true
             )
 
             TableDataRow(
@@ -1259,14 +1707,16 @@ private fun ReasonsTable(
     }
 
     TableCard(
-        title = "🧠 دلایل اصلی تحلیل"
+        title =
+            "🧠 دلایل اصلی تحلیل"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "#" to 50.dp,
-                "دلیل" to 420.dp
-            )
+            columns =
+                listOf(
+                    "#" to 50.dp,
+                    "دلیل" to 420.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1278,7 +1728,9 @@ private fun ReasonsTable(
 
             result.reasons
                 .take(10)
-                .forEachIndexed { index, reason ->
+                .forEachIndexed {
+                        index,
+                        reason ->
 
                     TableDataRow(
                         listOf(
@@ -1297,14 +1749,16 @@ private fun MarketSummaryTable(
 ) {
 
     TableCard(
-        title = "🌐 خلاصه اسکن بازار"
+        title =
+            "🌐 خلاصه اسکن بازار"
     ) {
 
         SharedTable(
-            columns = listOf(
-                "شاخص" to 190.dp,
-                "مقدار" to 190.dp
-            )
+            columns =
+                listOf(
+                    "شاخص" to 190.dp,
+                    "مقدار" to 190.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1351,18 +1805,20 @@ private fun CandidateTable(
 ) {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         SharedTable(
-            columns = listOf(
-                "ارز" to 105.dp,
-                "پیشنهاد" to 135.dp,
-                "امتیاز تحلیل" to 100.dp,
-                "ورود پول" to 105.dp,
-                "ورود سنگین پول" to 125.dp,
-                "ورود غیرطبیعی پول" to 145.dp
-            )
+            columns =
+                listOf(
+                    "ارز" to 105.dp,
+                    "پیشنهاد" to 135.dp,
+                    "امتیاز تحلیل" to 100.dp,
+                    "ورود پول" to 105.dp,
+                    "ورود سنگین پول" to 125.dp,
+                    "ورود غیرطبیعی پول" to 145.dp
+                )
         ) {
 
             TableHeaderRow(
@@ -1378,7 +1834,8 @@ private fun CandidateTable(
 
             candidates.forEach { candidate ->
 
-                val result = candidate.result
+                val result =
+                    candidate.result
 
                 val heavyInflow =
                     isHeavyInflow(
@@ -1437,21 +1894,28 @@ private fun SharedTable(
     content: @Composable () -> Unit
 ) {
 
-    val scrollState = rememberScrollState()
+    val scrollState =
+        rememberScrollState()
 
     val totalWidth =
-        columns.fold(0.dp) { total, column ->
+        columns.fold(0.dp) {
+                total,
+                column ->
             total + column.second
         }
 
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(scrollState)
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(
+                    scrollState
+                )
     ) {
 
         Column(
-            modifier = Modifier.width(totalWidth)
+            modifier =
+                Modifier.width(totalWidth)
         ) {
 
             content()
@@ -1465,15 +1929,20 @@ private fun TableHeaderRow(
 ) {
 
     Row(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
-        cells.forEach { (text, width) ->
+        cells.forEach {
+                (text, width) ->
 
             TableCell(
-                text = text,
-                width = width,
-                bold = true
+                text =
+                    text,
+                width =
+                    width,
+                bold =
+                    true
             )
         }
     }
@@ -1486,15 +1955,28 @@ private fun TableDataRow(
 ) {
 
     Row(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
-        cells.forEachIndexed { index, (text, width) ->
+        cells.forEachIndexed {
+                index,
+                cell ->
+
+            val text =
+                cell.first
+
+            val width =
+                cell.second
 
             TableCell(
-                text = text,
-                width = width,
-                bold = boldValue && index == cells.lastIndex
+                text =
+                    text,
+                width =
+                    width,
+                bold =
+                    boldValue &&
+                        index == cells.lastIndex
             )
         }
     }
@@ -1507,23 +1989,30 @@ private fun TableCard(
 ) {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            modifier =
+                Modifier.padding(8.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(2.dp)
         ) {
 
             Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(
-                    start = 8.dp,
-                    top = 6.dp,
-                    bottom = 8.dp
-                )
+                text =
+                    title,
+                style =
+                    MaterialTheme.typography.titleLarge,
+                fontWeight =
+                    FontWeight.Bold,
+                modifier =
+                    Modifier.padding(
+                        start = 8.dp,
+                        top = 6.dp,
+                        bottom = 8.dp
+                    )
             )
 
             content()
@@ -1539,24 +2028,27 @@ private fun TableCell(
 ) {
 
     Box(
-        modifier = Modifier
-            .width(width)
-            .padding(
-                horizontal = 1.dp,
-                vertical = 1.dp
-            )
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant
-            )
-            .padding(
-                horizontal = 7.dp,
-                vertical = 9.dp
-            )
+        modifier =
+            Modifier
+                .width(width)
+                .padding(
+                    horizontal = 1.dp,
+                    vertical = 1.dp
+                )
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant
+                )
+                .padding(
+                    horizontal = 7.dp,
+                    vertical = 9.dp
+                )
     ) {
 
         Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
+            text =
+                text,
+            style =
+                MaterialTheme.typography.bodySmall,
             fontWeight =
                 if (bold) {
                     FontWeight.Bold
@@ -1573,9 +2065,12 @@ private fun SectionTitle(
 ) {
 
     Text(
-        text = text,
-        style = MaterialTheme.typography.headlineSmall,
-        fontWeight = FontWeight.Bold
+        text =
+            text,
+        style =
+            MaterialTheme.typography.headlineSmall,
+        fontWeight =
+            FontWeight.Bold
     )
 }
 
@@ -1585,12 +2080,15 @@ private fun EmptyCard(
 ) {
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Text(
-            text = text,
-            modifier = Modifier.padding(16.dp)
+            text =
+                text,
+            modifier =
+                Modifier.padding(16.dp)
         )
     }
 }
@@ -1600,16 +2098,28 @@ private fun finalSignal(
 ): String {
 
     val score =
-        result.score.coerceIn(0, 100)
+        result.score.coerceIn(
+            0,
+            100
+        )
 
     val confidence =
-        result.confidence.coerceIn(0, 100)
+        result.confidence.coerceIn(
+            0,
+            100
+        )
 
     val pump =
-        result.pump.coerceIn(0, 100)
+        result.pump.coerceIn(
+            0,
+            100
+        )
 
     val dump =
-        result.dump.coerceIn(0, 100)
+        result.dump.coerceIn(
+            0,
+            100
+        )
 
     val heavyInflow =
         isHeavyInflow(
@@ -1677,10 +2187,18 @@ private fun isHeavyInflow(
             .trim()
             .uppercase(Locale.US)
 
-    return normalized.contains("HEAVY INFLOW") ||
-        normalized.contains("INFLOW HEAVY") ||
-        label.contains("ورود سنگین") ||
-        label.contains("ورود غیرعادی")
+    return normalized.contains(
+        "HEAVY INFLOW"
+    ) ||
+        normalized.contains(
+            "INFLOW HEAVY"
+        ) ||
+        label.contains(
+            "ورود سنگین"
+        ) ||
+        label.contains(
+            "ورود غیرعادی"
+        )
 }
 
 private fun isHeavyOutflow(
@@ -1692,10 +2210,18 @@ private fun isHeavyOutflow(
             .trim()
             .uppercase(Locale.US)
 
-    return normalized.contains("HEAVY OUTFLOW") ||
-        normalized.contains("OUTFLOW HEAVY") ||
-        label.contains("خروج سنگین") ||
-        label.contains("خروج غیرعادی")
+    return normalized.contains(
+        "HEAVY OUTFLOW"
+    ) ||
+        normalized.contains(
+            "OUTFLOW HEAVY"
+        ) ||
+        label.contains(
+            "خروج سنگین"
+        ) ||
+        label.contains(
+            "خروج غیرعادی"
+        )
 }
 
 private fun normalizeSymbol(
@@ -1712,7 +2238,8 @@ private fun normalizeSymbol(
             .replace(" ", "")
 
     if (s.isBlank()) {
-        s = "BTCUSDT"
+        s =
+            "BTCUSDT"
     }
 
     if (!s.endsWith("USDT")) {
@@ -1726,41 +2253,52 @@ private fun formatMoney(
     value: Double
 ): String {
 
-    val absolute = abs(value)
+    val absolute =
+        abs(value)
 
     return when {
 
-        absolute >= 1_000_000_000.0 ->
+        absolute >=
+            1_000_000_000.0 ->
 
-            "$" + String.format(
-                Locale.US,
-                "%.2fB",
-                value / 1_000_000_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fB",
+                    value /
+                        1_000_000_000.0
+                )
 
-        absolute >= 1_000_000.0 ->
+        absolute >=
+            1_000_000.0 ->
 
-            "$" + String.format(
-                Locale.US,
-                "%.2fM",
-                value / 1_000_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fM",
+                    value /
+                        1_000_000.0
+                )
 
-        absolute >= 1_000.0 ->
+        absolute >=
+            1_000.0 ->
 
-            "$" + String.format(
-                Locale.US,
-                "%.2fK",
-                value / 1_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fK",
+                    value /
+                        1_000.0
+                )
 
         else ->
 
-            "$" + String.format(
-                Locale.US,
-                "%.2f",
-                value
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2f",
+                    value
+                )
     }
 }
 
