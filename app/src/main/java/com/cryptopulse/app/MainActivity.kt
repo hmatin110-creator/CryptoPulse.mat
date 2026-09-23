@@ -48,1047 +48,931 @@ import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
 
-override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-    setContent {
-        MaterialTheme {
-            Surface(
-                modifier = Modifier.fillMaxSize()
-            ) {
-                CryptoAnalysisScreen()
+        // زمان‌بندی تحلیل و بررسی قیمت واچ‌لیست
+        // مستقل از باز بودن صفحه واچ‌لیست ثبت می‌شود.
+        WatchlistWorkScheduler.schedule(this)
+
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    CryptoAnalysisScreen()
+                }
             }
         }
     }
-}
-
 }
 
 @Composable
 private fun CryptoAnalysisScreen() {
 
-val scope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
 
-var currentPage by remember {
-    mutableStateOf("home")
-}
+    var currentPage by remember {
+        mutableStateOf("home")
+    }
 
-var symbol by remember {
-    mutableStateOf("BTCUSDT")
-}
+    var symbol by remember {
+        mutableStateOf("BTCUSDT")
+    }
 
-var analysisResult by remember {
-    mutableStateOf<AnalysisResult?>(null)
-}
+    var analysisResult by remember {
+        mutableStateOf<AnalysisResult?>(null)
+    }
 
-var newsSnapshot by remember {
-    mutableStateOf<NewsSnapshot?>(null)
-}
+    var newsSnapshot by remember {
+        mutableStateOf<NewsSnapshot?>(null)
+    }
 
-var scanResult by remember {
-    mutableStateOf<MarketScanResult?>(null)
-}
+    var scanResult by remember {
+        mutableStateOf<MarketScanResult?>(null)
+    }
 
-var loading by remember {
-    mutableStateOf(false)
-}
+    var loading by remember {
+        mutableStateOf(false)
+    }
 
-var message by remember {
-    mutableStateOf("آماده تحلیل")
-}
+    var message by remember {
+        mutableStateOf("آماده تحلیل")
+    }
 
-val context =
-    androidx.compose.ui.platform.LocalContext.current
+    val context =
+        androidx.compose.ui.platform.LocalContext.current
 
-val notificationPermissionLauncher =
-    rememberLauncherForActivityResult(
-        contract =
-            ActivityResultContracts.RequestPermission()
-    ) { granted ->
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract =
+                ActivityResultContracts.RequestPermission()
+        ) { granted ->
 
-        if (granted) {
+            if (granted) {
+
+                WatchlistWorkScheduler.schedule(
+                    context
+                )
+
+                message =
+                    "🔔 هشدار واچ‌لیست فعال شد."
+
+            } else {
+
+                message =
+                    "🔕 مجوز نوتیفیکیشن فعال نشد؛ هشدار قیمت ارسال نمی‌شود."
+            }
+        }
+
+    fun openWatchlist() {
+
+        currentPage =
+            "watchlist"
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.TIRAMISU
+        ) {
+
+            val granted =
+                context.checkSelfPermission(
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+
+            if (granted) {
+
+                WatchlistWorkScheduler.schedule(
+                    context
+                )
+
+            } else {
+
+                notificationPermissionLauncher.launch(
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+            }
+
+        } else {
 
             WatchlistWorkScheduler.schedule(
                 context
             )
-
-            message =
-                "🔔 هشدار واچ‌لیست فعال شد."
-
-        } else {
-
-            message =
-                "🔕 مجوز نوتیفیکیشن فعال نشد؛ هشدار قیمت ارسال نمی‌شود."
         }
     }
 
-fun openWatchlist() {
+    fun analyzeCoin() {
 
-    currentPage =
-        "watchlist"
+        if (loading) return
 
-    if (
-        Build.VERSION.SDK_INT >=
-        Build.VERSION_CODES.TIRAMISU
-    ) {
+        scope.launch {
 
-        val granted =
-            context.checkSelfPermission(
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
+            loading = true
+            analysisResult = null
+            newsSnapshot = null
 
-        if (granted) {
+            message = "در حال دریافت اطلاعات $symbol ..."
 
-            WatchlistWorkScheduler.schedule(
-                context
-            )
+            try {
 
-        } else {
+                val normalized =
+                    normalizeSymbol(symbol)
 
-            notificationPermissionLauncher.launch(
-                Manifest.permission.POST_NOTIFICATIONS
-            )
-        }
+                val repository =
+                    LiveRepository()
 
-    } else {
+                val snapshot =
+                    repository.load(normalized)
 
-        /*
-         * Android 12 و پایین‌تر
-         * مجوز POST_NOTIFICATIONS ندارند.
-         *
-         * بنابراین مستقیماً Worker را فعال می‌کنیم.
-         */
-        WatchlistWorkScheduler.schedule(
-            context
-        )
-    }
-}
+                message =
+                    "داده دریافت شد؛ در حال تحلیل..."
 
-fun analyzeCoin() {
+                val loadedNews =
+                    NewsRepository().load(normalized)
 
-    if (loading) return
-
-    scope.launch {
-
-        loading = true
-        analysisResult = null
-        newsSnapshot = null
-
-        message = "در حال دریافت اطلاعات $symbol ..."
-
-        try {
-
-            val normalized =
-                normalizeSymbol(symbol)
-
-            val repository =
-                LiveRepository()
-
-            val snapshot =
-                repository.load(normalized)
-
-            message =
-                "داده دریافت شد؛ در حال تحلیل..."
-
-            val loadedNews =
-                NewsRepository().load(normalized)
-
-            newsSnapshot =
-                loadedNews
-
-            val flow =
-                MarketFlowData(
-                    openInterest =
-                        snapshot.openInterest,
-                    fundingRate =
-                        snapshot.fundingRate,
-                    openInterestHistory =
-                        snapshot.openInterestHistory,
-                    longShortHistory =
-                        snapshot.longShortHistory,
-                    takerVolumeHistory =
-                        snapshot.takerVolumeHistory
-                )
-
-            val result =
-                AnalysisEngine.analyze(
-                    candles =
-                        snapshot.candles,
-                    flow =
-                        flow,
-                    newsScore =
-                        loadedNews.score,
-                    newsConfidence =
-                        loadedNews.confidence,
-                    btcCandles =
-                        snapshot.btcCandles
-                )
-
-            analysisResult =
-                result
-
-            message =
-                "تحلیل $normalized کامل شد."
-
-        } catch (e: Exception) {
-
-            analysisResult =
-                null
-
-            newsSnapshot =
-                null
-
-            message =
-                "خطا: ${e.message ?: "خطای نامشخص"}"
-
-        } finally {
-
-            loading =
-                false
-        }
-    }
-}
-
-fun scanMarket() {
-
-    if (loading) return
-
-    currentPage =
-        "scan"
-
-    scope.launch {
-
-        loading =
-            true
-
-        /*
-         * عمداً scanResult را پاک نمی‌کنیم.
-         *
-         * اگر نتیجه قبلی وجود داشته باشد، تا زمانی که
-         * نتیجه جدید آماده شود همچنان در صفحه اسکن باقی می‌ماند.
-         *
-         * همچنین اگر کاربر به خانه برود، این coroutine
-         * همچنان در scope همین صفحه اصلی اجرا می‌شود.
-         */
-
-        message =
-            "در حال اسکن بازار..."
-
-        try {
-
-            val result =
-                MarketScanner().scanDetailed(
-                    universeLimit = 1000,
-                    technicalLimit = 250,
-                    enrichLimit = 100
-                )
-
-            scanResult =
-                result
-
-            message =
-                "اسکن کامل شد؛ ${result.analyzedCount} ارز تحلیل شدند."
-
-        } catch (e: Exception) {
-
-            message =
-                "خطا در اسکن بازار: ${e.message ?: "خطای نامشخص"}"
-
-        } finally {
-
-            loading =
-                false
-        }
-    }
-}
-
-Column(
-    modifier =
-        Modifier.fillMaxSize()
-) {
-
-    Box(
-        modifier =
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-    ) {
-
-        when (currentPage) {
-
-            "home" -> {
-
-                HomePage(
-                    symbol =
-                        symbol,
-                    loading =
-                        loading,
-                    message =
-                        message,
-                    analysisResult =
-                        analysisResult,
-                    newsSnapshot =
-                        newsSnapshot,
-                    onSymbolChange = {
-                        symbol =
-                            it
-                                .uppercase(Locale.US)
-                                .replace(" ", "")
-                    },
-                    onAnalyze = {
-                        analyzeCoin()
-                    },
-                    onOpenScanner = {
-                        currentPage =
-                            "scan"
-                    }
-                )
-            }
-
-            "scan" -> {
-
-                MarketScanPage(
-                    loading =
-                        loading,
-                    message =
-                        message,
-                    scanResult =
-                        scanResult,
-                    onBackHome = {
-                        currentPage =
-                            "home"
-                    },
-                    onScan = {
-                        scanMarket()
-                    }
-                )
-            }
-
-            "watchlist" -> {
-
-                WatchlistPage(
-                    onBackHome = {
-                        currentPage =
-                            "home"
-                    }
-                )
-            }
-        }
-    }
-
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    MaterialTheme.colorScheme.surface
-                )
-                .padding(
-                    horizontal = 8.dp,
-                    vertical = 8.dp
-                ),
-        horizontalArrangement =
-            Arrangement.spacedBy(6.dp)
-    ) {
-
-        Button(
-            onClick = {
-                currentPage =
-                    "home"
-            },
-            modifier =
-                Modifier.weight(1f)
-        ) {
-
-            Text("🏠 خانه")
-        }
-
-        OutlinedButton(
-            onClick = {
-                currentPage =
-                    "scan"
-            },
-            modifier =
-                Modifier.weight(1f)
-        ) {
-
-            Text("📊 اسکن")
-        }
-
-        OutlinedButton(
-            onClick = {
-                openWatchlist()
-            },
-            modifier =
-                Modifier.weight(1f)
-        ) {
-
-            Text("⭐ واچ‌لیست")
-        }
-    }
-}
-
-}
-
-@Composable
-private fun HomePage(
-symbol: String,
-loading: Boolean,
-message: String,
-analysisResult: AnalysisResult?,
-newsSnapshot: NewsSnapshot?,
-onSymbolChange: (String) -> Unit,
-onAnalyze: () -> Unit,
-onOpenScanner: () -> Unit
-) {
-
-LazyColumn(
-    modifier =
-        Modifier
-            .fillMaxSize()
-            .padding(
-                horizontal = 12.dp,
-                vertical = 10.dp
-            ),
-    verticalArrangement =
-        Arrangement.spacedBy(12.dp)
-) {
-
-    item {
-        HeaderSection()
-    }
-
-    item {
-        SearchSection(
-            symbol =
-                symbol,
-            loading =
-                loading,
-            onSymbolChange =
-                onSymbolChange,
-            onAnalyze =
-                onAnalyze,
-            onScan =
-                onOpenScanner
-        )
-    }
-
-    item {
-        StatusSection(
-            message =
-                message,
-            loading =
-                loading
-        )
-    }
-
-    analysisResult?.let { result ->
-
-        item {
-            FinalResultTable(result)
-        }
-
-        item {
-            TradePlanTable(result)
-        }
-
-        item {
-            NewsAnalysisCard(
-                result =
-                    result,
                 newsSnapshot =
-                    newsSnapshot
-            )
-        }
+                    loadedNews
 
-        item {
-            AnalysisTable(result)
-        }
+                val flow =
+                    MarketFlowData(
+                        openInterest =
+                            snapshot.openInterest,
+                        fundingRate =
+                            snapshot.fundingRate,
+                        openInterestHistory =
+                            snapshot.openInterestHistory,
+                        longShortHistory =
+                            snapshot.longShortHistory,
+                        takerVolumeHistory =
+                            snapshot.takerVolumeHistory
+                    )
 
-        item {
-            MoneyFlowTable(result)
-        }
+                val result =
+                    AnalysisEngine.analyze(
+                        candles =
+                            snapshot.candles,
+                        flow =
+                            flow,
+                        newsScore =
+                            loadedNews.score,
+                        newsConfidence =
+                            loadedNews.confidence,
+                        btcCandles =
+                            snapshot.btcCandles
+                    )
 
-        item {
-            ReasonsTable(result)
+                analysisResult =
+                    result
+
+                message =
+                    "تحلیل $normalized کامل شد."
+
+            } catch (e: Exception) {
+
+                analysisResult =
+                    null
+
+                newsSnapshot =
+                    null
+
+                message =
+                    "خطا: ${e.message ?: "خطای نامشخص"}"
+
+            } finally {
+
+                loading =
+                    false
+            }
         }
     }
 
-    item {
+    fun scanMarket() {
 
-        Spacer(
-            modifier =
-                Modifier.height(8.dp)
-        )
+        if (loading) return
 
-        Card(
-            modifier =
-                Modifier.fillMaxWidth(),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
-        ) {
+        currentPage =
+            "scan"
 
-            Text(
-                text =
-                    "⚠️ نتایج تحلیل آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
-                modifier =
-                    Modifier.padding(14.dp),
-                style =
-                    MaterialTheme.typography.bodySmall
-            )
+        scope.launch {
+
+            loading =
+                true
+
+            message =
+                "در حال اسکن بازار..."
+
+            try {
+
+                val result =
+                    MarketScanner().scanDetailed(
+                        universeLimit = 1000,
+                        technicalLimit = 250,
+                        enrichLimit = 100
+                    )
+
+                scanResult =
+                    result
+
+                message =
+                    "اسکن کامل شد؛ ${result.analyzedCount} ارز تحلیل شدند."
+
+            } catch (e: Exception) {
+
+                message =
+                    "خطا در اسکن بازار: ${e.message ?: "خطای نامشخص"}"
+
+            } finally {
+
+                loading =
+                    false
+            }
         }
     }
-}
 
-}
+    Column(
+        modifier =
+            Modifier.fillMaxSize()
+    ) {
 
-@Composable
-private fun MarketScanPage(
-loading: Boolean,
-message: String,
-scanResult: MarketScanResult?,
-onBackHome: () -> Unit,
-onScan: () -> Unit
-) {
-
-LazyColumn(
-    modifier =
-        Modifier
-            .fillMaxSize()
-            .padding(
-                horizontal = 12.dp,
-                vertical = 10.dp
-            ),
-    verticalArrangement =
-        Arrangement.spacedBy(12.dp)
-) {
-
-    item {
-
-        Card(
+        Box(
             modifier =
-                Modifier.fillMaxWidth()
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
         ) {
 
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                horizontalArrangement =
-                    Arrangement.spacedBy(8.dp),
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
+            when (currentPage) {
 
-                OutlinedButton(
-                    onClick =
-                        onBackHome
-                ) {
+                "home" -> {
 
-                    Text("← خانه")
+                    HomePage(
+                        symbol =
+                            symbol,
+                        loading =
+                            loading,
+                        message =
+                            message,
+                        analysisResult =
+                            analysisResult,
+                        newsSnapshot =
+                            newsSnapshot,
+                        onSymbolChange = {
+                            symbol =
+                                it
+                                    .uppercase(Locale.US)
+                                    .replace(" ", "")
+                        },
+                        onAnalyze = {
+                            analyzeCoin()
+                        },
+                        onOpenScanner = {
+                            currentPage =
+                                "scan"
+                        }
+                    )
                 }
 
-                Text(
-                    text =
-                        "📊 اسکن بازار",
-                    style =
-                        MaterialTheme.typography.titleLarge,
-                    fontWeight =
-                        FontWeight.Bold
-                )
-            }
-        }
-    }
+                "scan" -> {
 
-    item {
-
-        Card(
-            modifier =
-                Modifier.fillMaxWidth()
-        ) {
-
-            Column(
-                modifier =
-                    Modifier.padding(14.dp),
-                verticalArrangement =
-                    Arrangement.spacedBy(10.dp)
-            ) {
-
-                Text(
-                    text =
-                        if (loading) {
-                            "🔄 اسکن بازار در حال انجام است..."
-                        } else {
-                            "📊 اسکن بازار"
+                    MarketScanPage(
+                        loading =
+                            loading,
+                        message =
+                            message,
+                        scanResult =
+                            scanResult,
+                        onBackHome = {
+                            currentPage =
+                                "home"
                         },
-                    style =
-                        MaterialTheme.typography.titleLarge,
-                    fontWeight =
-                        FontWeight.Bold
-                )
+                        onScan = {
+                            scanMarket()
+                        }
+                    )
+                }
 
-                Text(
-                    text =
-                        message,
-                    style =
-                        MaterialTheme.typography.bodyMedium
-                )
+                "watchlist" -> {
 
-                Button(
-                    onClick =
-                        onScan,
-                    enabled =
-                        !loading,
-                    modifier =
-                        Modifier.fillMaxWidth()
-                ) {
-
-                    if (loading) {
-
-                        CircularProgressIndicator(
-                            modifier =
-                                Modifier
-                                    .width(20.dp)
-                                    .height(20.dp),
-                            strokeWidth =
-                                2.dp
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.width(8.dp)
-                        )
-                    }
-
-                    Text(
-                        text =
-                            if (loading) {
-                                "اسکن در حال انجام..."
-                            } else {
-                                "شروع اسکن بازار"
-                            }
+                    WatchlistPage(
+                        onBackHome = {
+                            currentPage =
+                                "home"
+                        }
                     )
                 }
             }
         }
-    }
 
-    scanResult?.let { scan ->
-
-        item {
-            MarketSummaryTable(scan)
-        }
-
-        item {
-
-            Spacer(
-                modifier =
-                    Modifier.height(4.dp)
-            )
-
-            SectionTitle(
-                "🔥 Top 10 کل بازار"
-            )
-        }
-
-        if (scan.top10All.isEmpty()) {
-
-            item {
-
-                EmptyCard(
-                    "هیچ ارزی با پیشنهاد خرید پیدا نشد."
-                )
-            }
-
-        } else {
-
-            item {
-
-                CandidateTable(
-                    candidates =
-                        scan.top10All
-                )
-            }
-        }
-
-        item {
-
-            Spacer(
-                modifier =
-                    Modifier.height(4.dp)
-            )
-
-            SectionTitle(
-                "🏆 Top 10 رتبه‌های 1 تا 100"
-            )
-        }
-
-        if (scan.top10Top100.isEmpty()) {
-
-            item {
-
-                EmptyCard(
-                    "برای این بخش پیشنهاد خریدی وجود ندارد."
-                )
-            }
-
-        } else {
-
-            item {
-
-                CandidateTable(
-                    candidates =
-                        scan.top10Top100
-                )
-            }
-        }
-    }
-
-    item {
-
-        Spacer(
+        Row(
             modifier =
-                Modifier.height(8.dp)
-        )
-
-        Card(
-            modifier =
-                Modifier.fillMaxWidth(),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        MaterialTheme.colorScheme.surface
+                    )
+                    .padding(
+                        horizontal = 8.dp,
+                        vertical = 8.dp
+                    ),
+            horizontalArrangement =
+                Arrangement.spacedBy(6.dp)
         ) {
 
-            Text(
-                text =
-                    "⚠️ نتایج اسکن آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+            Button(
+                onClick = {
+                    currentPage =
+                        "home"
+                },
                 modifier =
-                    Modifier.padding(14.dp),
-                style =
-                    MaterialTheme.typography.bodySmall
-            )
+                    Modifier.weight(1f)
+            ) {
+
+                Text("🏠 خانه")
+            }
+
+            OutlinedButton(
+                onClick = {
+                    currentPage =
+                        "scan"
+                },
+                modifier =
+                    Modifier.weight(1f)
+            ) {
+
+                Text("📊 اسکن")
+            }
+
+            OutlinedButton(
+                onClick = {
+                    openWatchlist()
+                },
+                modifier =
+                    Modifier.weight(1f)
+            ) {
+
+                Text("⭐ واچ‌لیست")
+            }
         }
     }
 }
 
+@Composable
+private fun HomePage(
+    symbol: String,
+    loading: Boolean,
+    message: String,
+    analysisResult: AnalysisResult?,
+    newsSnapshot: NewsSnapshot?,
+    onSymbolChange: (String) -> Unit,
+    onAnalyze: () -> Unit,
+    onOpenScanner: () -> Unit
+) {
+
+    LazyColumn(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 10.dp
+                ),
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
+    ) {
+
+        item {
+            HeaderSection()
+        }
+
+        item {
+            SearchSection(
+                symbol =
+                    symbol,
+                loading =
+                    loading,
+                onSymbolChange =
+                    onSymbolChange,
+                onAnalyze =
+                    onAnalyze,
+                onScan =
+                    onOpenScanner
+            )
+        }
+
+        item {
+            StatusSection(
+                message =
+                    message,
+                loading =
+                    loading
+            )
+        }
+
+        analysisResult?.let { result ->
+
+            item {
+                FinalResultTable(result)
+            }
+
+            item {
+                TradePlanTable(result)
+            }
+
+            item {
+                NewsAnalysisCard(
+                    result =
+                        result,
+                    newsSnapshot =
+                        newsSnapshot
+                )
+            }
+
+            item {
+                AnalysisTable(result)
+            }
+
+            item {
+                MoneyFlowTable(result)
+            }
+
+            item {
+                ReasonsTable(result)
+            }
+        }
+
+        item {
+
+            Spacer(
+                modifier =
+                    Modifier.height(8.dp)
+            )
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+            ) {
+
+                Text(
+                    text =
+                        "⚠️ نتایج تحلیل آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                    modifier =
+                        Modifier.padding(14.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarketScanPage(
+    loading: Boolean,
+    message: String,
+    scanResult: MarketScanResult?,
+    onBackHome: () -> Unit,
+    onScan: () -> Unit
+) {
+
+    LazyColumn(
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 10.dp
+                ),
+        verticalArrangement =
+            Arrangement.spacedBy(12.dp)
+    ) {
+
+        item {
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(8.dp),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+
+                    OutlinedButton(
+                        onClick =
+                            onBackHome
+                    ) {
+
+                        Text("← خانه")
+                    }
+
+                    Text(
+                        text =
+                            "📊 اسکن بازار",
+                        style =
+                            MaterialTheme.typography.titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        item {
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+
+                Column(
+                    modifier =
+                        Modifier.padding(14.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
+                ) {
+
+                    Text(
+                        text =
+                            if (loading) {
+                                "🔄 اسکن بازار در حال انجام است..."
+                            } else {
+                                "📊 اسکن بازار"
+                            },
+                        style =
+                            MaterialTheme.typography.titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        text =
+                            message,
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+
+                    Button(
+                        onClick =
+                            onScan,
+                        enabled =
+                            !loading,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                    ) {
+
+                        if (loading) {
+
+                            CircularProgressIndicator(
+                                modifier =
+                                    Modifier
+                                        .width(20.dp)
+                                        .height(20.dp),
+                                strokeWidth =
+                                    2.dp
+                            )
+
+                            Spacer(
+                                modifier =
+                                    Modifier.width(8.dp)
+                            )
+                        }
+
+                        Text(
+                            text =
+                                if (loading) {
+                                    "اسکن در حال انجام..."
+                                } else {
+                                    "شروع اسکن بازار"
+                                }
+                        )
+                    }
+                }
+            }
+        }
+
+        scanResult?.let { scan ->
+
+            item {
+                MarketSummaryTable(scan)
+            }
+
+            item {
+
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
+
+                SectionTitle(
+                    "🔥 Top 10 کل بازار"
+                )
+            }
+
+            if (scan.top10All.isEmpty()) {
+
+                item {
+
+                    EmptyCard(
+                        "هیچ ارزی با پیشنهاد خرید پیدا نشد."
+                    )
+                }
+
+            } else {
+
+                item {
+
+                    CandidateTable(
+                        candidates =
+                            scan.top10All
+                    )
+                }
+            }
+
+            item {
+
+                Spacer(
+                    modifier =
+                        Modifier.height(4.dp)
+                )
+
+                SectionTitle(
+                    "🏆 Top 10 رتبه‌های 1 تا 100"
+                )
+            }
+
+            if (scan.top10Top100.isEmpty()) {
+
+                item {
+
+                    EmptyCard(
+                        "برای این بخش پیشنهاد خریدی وجود ندارد."
+                    )
+                }
+
+            } else {
+
+                item {
+
+                    CandidateTable(
+                        candidates =
+                            scan.top10Top100
+                    )
+                }
+            }
+        }
+
+        item {
+
+            Spacer(
+                modifier =
+                    Modifier.height(8.dp)
+            )
+
+            Card(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
+            ) {
+
+                Text(
+                    text =
+                        "⚠️ نتایج اسکن آماری هستند و تضمین سود یا پیش‌بینی قطعی قیمت نیستند.",
+                    modifier =
+                        Modifier.padding(14.dp),
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
 }
 
 @Composable
 private fun HeaderSection() {
 
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    Column(
+    Card(
         modifier =
-            Modifier.padding(18.dp),
-        verticalArrangement =
-            Arrangement.spacedBy(6.dp)
+            Modifier.fillMaxWidth()
     ) {
-
-        Text(
-            text =
-                "Crypto110",
-            style =
-                MaterialTheme.typography.headlineMedium,
-            fontWeight =
-                FontWeight.Bold
-        )
-
-        Text(
-            text =
-                "تحلیل هوشمند بازار ارزهای دیجیتال",
-            style =
-                MaterialTheme.typography.titleMedium
-        )
-
-        Text(
-            text =
-                "Technical • Money Flow • News • Structure • BTC Regime",
-            style =
-                MaterialTheme.typography.bodySmall
-        )
-    }
-}
-
-}
-
-@Composable
-private fun SearchSection(
-symbol: String,
-loading: Boolean,
-onSymbolChange: (String) -> Unit,
-onAnalyze: () -> Unit,
-onScan: () -> Unit
-) {
-
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    Column(
-        modifier =
-            Modifier.padding(14.dp),
-        verticalArrangement =
-            Arrangement.spacedBy(10.dp)
-    ) {
-
-        Text(
-            text =
-                "🔎 تحلیل ارز",
-            style =
-                MaterialTheme.typography.titleLarge,
-            fontWeight =
-                FontWeight.Bold
-        )
-
-        OutlinedTextField(
-            value =
-                symbol,
-            onValueChange =
-                onSymbolChange,
-            modifier =
-                Modifier.fillMaxWidth(),
-            label = {
-                Text("نماد ارز")
-            },
-            placeholder = {
-                Text("مثلاً BTCUSDT")
-            },
-            singleLine =
-                true
-        )
-
-        Row(
-            modifier =
-                Modifier.fillMaxWidth(),
-            horizontalArrangement =
-                Arrangement.spacedBy(8.dp)
-        ) {
-
-            Button(
-                onClick =
-                    onAnalyze,
-                enabled =
-                    !loading,
-                modifier =
-                    Modifier.weight(1f)
-            ) {
-
-                Text("تحلیل ارز")
-            }
-
-            OutlinedButton(
-                onClick =
-                    onScan,
-                enabled =
-                    !loading,
-                modifier =
-                    Modifier.weight(1f)
-            ) {
-
-                Text("اسکن بازار")
-            }
-        }
-    }
-}
-
-}
-
-@Composable
-private fun StatusSection(
-message: String,
-loading: Boolean
-) {
-
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-        horizontalArrangement =
-            Arrangement.spacedBy(10.dp),
-        verticalAlignment =
-            Alignment.CenterVertically
-    ) {
-
-        if (loading) {
-
-            CircularProgressIndicator(
-                modifier =
-                    Modifier
-                        .width(24.dp)
-                        .height(24.dp)
-            )
-        }
 
         Column(
+            modifier =
+                Modifier.padding(18.dp),
             verticalArrangement =
-                Arrangement.spacedBy(2.dp)
+                Arrangement.spacedBy(6.dp)
         ) {
 
             Text(
                 text =
-                    "وضعیت",
+                    "Crypto110",
                 style =
-                    MaterialTheme.typography.titleMedium,
+                    MaterialTheme.typography.headlineMedium,
                 fontWeight =
                     FontWeight.Bold
             )
 
             Text(
                 text =
-                    message
+                    "تحلیل هوشمند بازار ارزهای دیجیتال",
+                style =
+                    MaterialTheme.typography.titleMedium
+            )
+
+            Text(
+                text =
+                    "Technical • Money Flow • News • Structure • BTC Regime",
+                style =
+                    MaterialTheme.typography.bodySmall
             )
         }
     }
 }
 
+@Composable
+private fun SearchSection(
+    symbol: String,
+    loading: Boolean,
+    onSymbolChange: (String) -> Unit,
+    onAnalyze: () -> Unit,
+    onScan: () -> Unit
+) {
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
+
+        Column(
+            modifier =
+                Modifier.padding(14.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(10.dp)
+        ) {
+
+            Text(
+                text =
+                    "🔎 تحلیل ارز",
+                style =
+                    MaterialTheme.typography.titleLarge,
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            OutlinedTextField(
+                value =
+                    symbol,
+                onValueChange =
+                    onSymbolChange,
+                modifier =
+                    Modifier.fillMaxWidth(),
+                label = {
+                    Text("نماد ارز")
+                },
+                placeholder = {
+                    Text("مثلاً BTCUSDT")
+                },
+                singleLine =
+                    true
+            )
+
+            Row(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+
+                Button(
+                    onClick =
+                        onAnalyze,
+                    enabled =
+                        !loading,
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+
+                    Text("تحلیل ارز")
+                }
+
+                OutlinedButton(
+                    onClick =
+                        onScan,
+                    enabled =
+                        !loading,
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+
+                    Text("اسکن بازار")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusSection(
+    message: String,
+    loading: Boolean
+) {
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
+
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+            horizontalArrangement =
+                Arrangement.spacedBy(10.dp),
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+
+            if (loading) {
+
+                CircularProgressIndicator(
+                    modifier =
+                        Modifier
+                            .width(24.dp)
+                            .height(24.dp)
+                )
+            }
+
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(2.dp)
+            ) {
+
+                Text(
+                    text =
+                        "وضعیت",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Text(
+                    text =
+                        message
+                )
+            }
+        }
+    }
 }
 
 @Composable
 private fun FinalResultTable(
-result: AnalysisResult
+    result: AnalysisResult
 ) {
 
-val signal =
-    finalSignal(result)
+    val signal =
+        finalSignal(result)
 
-TableCard(
-    title =
-        "🎯 تحلیل نهایی"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
+    TableCard(
+        title =
+            "🎯 تحلیل نهایی"
     ) {
-
-        TableHeaderRow(
-            listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "پیشنهاد نهایی" to 150.dp,
-                signal to 190.dp
-            ),
-            boldValue =
-                true
-        )
-
-        TableDataRow(
-            listOf(
-                "Score" to 150.dp,
-                "${result.score}/100" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Confidence" to 150.dp,
-                "${result.confidence}%" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Pump Probability" to 150.dp,
-                "${result.pump}%" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Dump Probability" to 150.dp,
-                "${result.dump}%" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Money Flow" to 150.dp,
-                "${result.moneyFlow}/100" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "News Score" to 150.dp,
-                "${result.news}/100" to 190.dp
-            ),
-            boldValue =
-                true
-        )
-
-        TableDataRow(
-            listOf(
-                "Trend" to 150.dp,
-                "${result.trend}/100" to 190.dp
-            )
-        )
-    }
-}
-
-}
-
-@Composable
-private fun TradePlanTable(
-result: AnalysisResult
-) {
-
-val plan =
-    result.tradePlan
-
-val signal =
-    finalSignal(result)
-
-TableCard(
-    title =
-        "🎯 محدوده‌های خرید و فروش"
-) {
-
-    if (plan != null) {
 
         SharedTable(
             columns =
                 listOf(
-                    "مورد" to 175.dp,
-                    "مقدار" to 250.dp
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
                 )
         ) {
 
             TableHeaderRow(
                 listOf(
-                    "مورد" to 175.dp,
-                    "مقدار" to 250.dp
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
                 )
             )
 
             TableDataRow(
                 listOf(
-                    "سیگنال" to 175.dp,
-                    signal to 250.dp
+                    "پیشنهاد نهایی" to 150.dp,
+                    signal to 190.dp
                 ),
                 boldValue =
                     true
@@ -1096,8 +980,43 @@ TableCard(
 
             TableDataRow(
                 listOf(
-                    "🟢 محدوده ورود" to 175.dp,
-                    "${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}" to 250.dp
+                    "Score" to 150.dp,
+                    "${result.score}/100" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Confidence" to 150.dp,
+                    "${result.confidence}%" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Pump Probability" to 150.dp,
+                    "${result.pump}%" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Dump Probability" to 150.dp,
+                    "${result.dump}%" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Money Flow" to 150.dp,
+                    "${result.moneyFlow}/100" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "News Score" to 150.dp,
+                    "${result.news}/100" to 190.dp
                 ),
                 boldValue =
                     true
@@ -1105,152 +1024,90 @@ TableCard(
 
             TableDataRow(
                 listOf(
-                    "🔴 حد ضرر" to 175.dp,
-                    formatPrice(plan.stopLoss) to 250.dp
-                )
-            )
-
-            TableDataRow(
-                listOf(
-                    "🎯 هدف اول" to 175.dp,
-                    formatPrice(plan.tp1) to 250.dp
-                )
-            )
-
-            TableDataRow(
-                listOf(
-                    "🎯 هدف دوم" to 175.dp,
-                    formatPrice(plan.tp2) to 250.dp
-                )
-            )
-
-            TableDataRow(
-                listOf(
-                    "⚖️ Risk / Reward" to 175.dp,
-                    formatRR(plan.riskReward) to 250.dp
+                    "Trend" to 150.dp,
+                    "${result.trend}/100" to 190.dp
                 )
             )
         }
+    }
+}
 
-        Spacer(
-            modifier =
-                Modifier.height(8.dp)
-        )
+@Composable
+private fun TradePlanTable(
+    result: AnalysisResult
+) {
 
-        Card(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
-        ) {
+    val plan =
+        result.tradePlan
 
-            Text(
-                text =
-                    when {
-                        signal.contains("خرید") ->
-                            "🟢 محدوده سبز = محدوده ورود محاسبه‌شده"
+    val signal =
+        finalSignal(result)
 
-                        signal.contains("فروش") ->
-                            "🔴 محدوده فروش = محدوده خروج/ورود فروش محاسبه‌شده"
+    TableCard(
+        title =
+            "🎯 محدوده‌های خرید و فروش"
+    ) {
 
-                        else ->
-                            "🟡 این محدوده بر اساس برنامه معامله فعلی محاسبه شده است."
-                    },
-                modifier =
-                    Modifier.padding(12.dp),
-                style =
-                    MaterialTheme.typography.bodySmall
-            )
-        }
-
-    } else {
-
-        val support =
-            result.structure.support
-
-        val resistance =
-            result.structure.resistance
-
-        val validSupport =
-            support.isFinite() &&
-                support > 0.0
-
-        val validResistance =
-            resistance.isFinite() &&
-                resistance > 0.0
-
-        if (validSupport || validResistance) {
+        if (plan != null) {
 
             SharedTable(
                 columns =
                     listOf(
-                        "مورد" to 185.dp,
+                        "مورد" to 175.dp,
                         "مقدار" to 250.dp
                     )
             ) {
 
                 TableHeaderRow(
                     listOf(
-                        "مورد" to 185.dp,
+                        "مورد" to 175.dp,
                         "مقدار" to 250.dp
                     )
                 )
 
                 TableDataRow(
                     listOf(
-                        "سیگنال فعلی" to 185.dp,
+                        "سیگنال" to 175.dp,
                         signal to 250.dp
                     ),
                     boldValue =
                         true
                 )
 
-                if (validSupport) {
-
-                    TableDataRow(
-                        listOf(
-                            "🟢 محدوده احتمالی خرید" to 185.dp,
-                            formatPrice(support) to 250.dp
-                        ),
-                        boldValue =
-                            true
-                    )
-                }
-
-                if (validResistance) {
-
-                    TableDataRow(
-                        listOf(
-                            "🔴 محدوده احتمالی فروش" to 185.dp,
-                            formatPrice(resistance) to 250.dp
-                        ),
-                        boldValue =
-                            true
-                    )
-                }
-
-                if (
-                    validSupport &&
-                    validResistance
-                ) {
-
-                    TableDataRow(
-                        listOf(
-                            "📏 فاصله حمایت تا مقاومت" to 185.dp,
-                            "${formatPrice(support)} - ${formatPrice(resistance)}" to 250.dp
-                        )
-                    )
-                }
+                TableDataRow(
+                    listOf(
+                        "🟢 محدوده ورود" to 175.dp,
+                        "${formatPrice(plan.entryLow)} - ${formatPrice(plan.entryHigh)}" to 250.dp
+                    ),
+                    boldValue =
+                        true
+                )
 
                 TableDataRow(
                     listOf(
-                        "وضعیت برنامه معامله" to 185.dp,
-                        "ورود فعال تأیید نشده" to 250.dp
+                        "🔴 حد ضرر" to 175.dp,
+                        formatPrice(plan.stopLoss) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🎯 هدف اول" to 175.dp,
+                        formatPrice(plan.tp1) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "🎯 هدف دوم" to 175.dp,
+                        formatPrice(plan.tp2) to 250.dp
+                    )
+                )
+
+                TableDataRow(
+                    listOf(
+                        "⚖️ Risk / Reward" to 175.dp,
+                        formatRR(plan.riskReward) to 250.dp
                     )
                 )
             }
@@ -1269,12 +1126,21 @@ TableCard(
                     CardDefaults.cardColors(
                         containerColor =
                             MaterialTheme.colorScheme.surfaceVariant
-                )
+                    )
             ) {
 
                 Text(
                     text =
-                        "🟡 سیگنال فعلی ورود قطعی را تأیید نکرده است؛ اعداد بالا محدوده‌های احتمالی حمایت و مقاومت هستند.",
+                        when {
+                            signal.contains("خرید") ->
+                                "🟢 محدوده سبز = محدوده ورود محاسبه‌شده"
+
+                            signal.contains("فروش") ->
+                                "🔴 محدوده فروش = محدوده خروج/ورود فروش محاسبه‌شده"
+
+                            else ->
+                                "🟡 این محدوده بر اساس برنامه معامله فعلی محاسبه شده است."
+                        },
                     modifier =
                         Modifier.padding(12.dp),
                     style =
@@ -1284,1179 +1150,1272 @@ TableCard(
 
         } else {
 
-            SharedTable(
-                columns =
-                    listOf(
-                        "وضعیت" to 170.dp,
-                        "توضیح" to 270.dp
-                    )
-            ) {
+            val support =
+                result.structure.support
 
-                TableHeaderRow(
-                    listOf(
-                        "وضعیت" to 170.dp,
-                        "توضیح" to 270.dp
+            val resistance =
+                result.structure.resistance
+
+            val validSupport =
+                support.isFinite() &&
+                    support > 0.0
+
+            val validResistance =
+                resistance.isFinite() &&
+                    resistance > 0.0
+
+            if (validSupport || validResistance) {
+
+                SharedTable(
+                    columns =
+                        listOf(
+                            "مورد" to 185.dp,
+                            "مقدار" to 250.dp
+                        )
+                ) {
+
+                    TableHeaderRow(
+                        listOf(
+                            "مورد" to 185.dp,
+                            "مقدار" to 250.dp
+                        )
                     )
+
+                    TableDataRow(
+                        listOf(
+                            "سیگنال فعلی" to 185.dp,
+                            signal to 250.dp
+                        ),
+                        boldValue =
+                            true
+                    )
+
+                    if (validSupport) {
+
+                        TableDataRow(
+                            listOf(
+                                "🟢 محدوده احتمالی خرید" to 185.dp,
+                                formatPrice(support) to 250.dp
+                            ),
+                            boldValue =
+                                true
+                        )
+                    }
+
+                    if (validResistance) {
+
+                        TableDataRow(
+                            listOf(
+                                "🔴 محدوده احتمالی فروش" to 185.dp,
+                                formatPrice(resistance) to 250.dp
+                            ),
+                            boldValue =
+                                true
+                        )
+                    }
+
+                    if (
+                        validSupport &&
+                        validResistance
+                    ) {
+
+                        TableDataRow(
+                            listOf(
+                                "📏 فاصله حمایت تا مقاومت" to 185.dp,
+                                "${formatPrice(support)} - ${formatPrice(resistance)}" to 250.dp
+                            )
+                        )
+                    }
+
+                    TableDataRow(
+                        listOf(
+                            "وضعیت برنامه معامله" to 185.dp,
+                            "ورود فعال تأیید نشده" to 250.dp
+                        )
+                    )
+                }
+
+                Spacer(
+                    modifier =
+                        Modifier.height(8.dp)
                 )
 
-                TableDataRow(
-                    listOf(
-                        "سیگنال" to 170.dp,
-                        signal to 270.dp
-                    ),
-                    boldValue =
-                        true
-                )
+                Card(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MaterialTheme.colorScheme.surfaceVariant
+                        )
+                ) {
 
-                TableDataRow(
-                    listOf(
-                        "محدوده خرید" to 170.dp,
-                        "داده کافی برای محاسبه وجود ندارد" to 270.dp
+                    Text(
+                        text =
+                            "🟡 سیگنال فعلی ورود قطعی را تأیید نکرده است؛ اعداد بالا محدوده‌های احتمالی حمایت و مقاومت هستند.",
+                        modifier =
+                            Modifier.padding(12.dp),
+                        style =
+                            MaterialTheme.typography.bodySmall
                     )
-                )
+                }
 
-                TableDataRow(
-                    listOf(
-                        "محدوده فروش" to 170.dp,
-                        "داده کافی برای محاسبه وجود ندارد" to 270.dp
+            } else {
+
+                SharedTable(
+                    columns =
+                        listOf(
+                            "وضعیت" to 170.dp,
+                            "توضیح" to 270.dp
+                        )
+                ) {
+
+                    TableHeaderRow(
+                        listOf(
+                            "وضعیت" to 170.dp,
+                            "توضیح" to 270.dp
+                        )
                     )
-                )
+
+                    TableDataRow(
+                        listOf(
+                            "سیگنال" to 170.dp,
+                            signal to 270.dp
+                        ),
+                        boldValue =
+                            true
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "محدوده خرید" to 170.dp,
+                            "داده کافی برای محاسبه وجود ندارد" to 270.dp
+                        )
+                    )
+
+                    TableDataRow(
+                        listOf(
+                            "محدوده فروش" to 170.dp,
+                            "داده کافی برای محاسبه وجود ندارد" to 270.dp
+                        )
+                    )
+                }
             }
         }
     }
 }
 
-}
-
 @Composable
 private fun NewsAnalysisCard(
-result: AnalysisResult,
-newsSnapshot: NewsSnapshot?
+    result: AnalysisResult,
+    newsSnapshot: NewsSnapshot?
 ) {
 
-val newsLabel =
-    when {
+    val newsLabel =
+        when {
 
-        result.news >= 75 ->
-            "🟢 اخبار بسیار مثبت"
+            result.news >= 75 ->
+                "🟢 اخبار بسیار مثبت"
 
-        result.news >= 60 ->
-            "🟢 اخبار مثبت"
+            result.news >= 60 ->
+                "🟢 اخبار مثبت"
 
-        result.news >= 45 ->
-            "🟡 اخبار خنثی"
+            result.news >= 45 ->
+                "🟡 اخبار خنثی"
 
-        result.news >= 30 ->
-            "🟠 اخبار منفی"
+            result.news >= 30 ->
+                "🟠 اخبار منفی"
 
-        else ->
-            "🔴 اخبار بسیار منفی"
-    }
+            else ->
+                "🔴 اخبار بسیار منفی"
+        }
 
-val newsEffect =
-    when {
-        result.news >= 70 ->
-            "مثبت"
+    val newsEffect =
+        when {
+            result.news >= 70 ->
+                "مثبت"
 
-        result.news <= 30 ->
-            "منفی"
+            result.news <= 30 ->
+                "منفی"
 
-        else ->
-            "خنثی"
-    }
+            else ->
+                "خنثی"
+        }
 
-TableCard(
-    title =
-        "📰 تحلیل اخبار"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
+    TableCard(
+        title =
+            "📰 تحلیل اخبار"
     ) {
 
-        TableHeaderRow(
-            listOf(
-                "شاخص" to 150.dp,
-                "مقدار" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "امتیاز اخبار" to 150.dp,
-                "${result.news}/100" to 190.dp
-            ),
-            boldValue =
-                true
-        )
-
-        TableDataRow(
-            listOf(
-                "وضعیت اخبار" to 150.dp,
-                newsLabel to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "اطمینان تحلیل" to 150.dp,
-                "${newsSnapshot?.confidence ?: result.confidence}%" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "اثر در تصمیم نهایی" to 150.dp,
-                newsEffect to 190.dp
-            )
-        )
-    }
-
-    Spacer(
-        modifier =
-            Modifier.height(10.dp)
-    )
-
-    Text(
-        text =
-            "📰 ۵ خبر مهم مرتبط",
-        modifier =
-            Modifier.padding(
-                horizontal = 8.dp,
-                vertical = 4.dp
-            ),
-        style =
-            MaterialTheme.typography.titleMedium,
-        fontWeight =
-            FontWeight.Bold
-    )
-
-    val newsItems =
-        newsSnapshot
-            ?.items
-            ?.take(5)
-            ?: emptyList()
-
-    if (newsItems.isEmpty()) {
-
-        Card(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(4.dp),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
+        SharedTable(
+            columns =
+                listOf(
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
                 )
         ) {
 
-            Text(
-                text =
-                    "برای این ارز خبر مرتبطی دریافت نشد.",
-                modifier =
-                    Modifier.padding(12.dp),
-                style =
-                    MaterialTheme.typography.bodySmall
+            TableHeaderRow(
+                listOf(
+                    "شاخص" to 150.dp,
+                    "مقدار" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "امتیاز اخبار" to 150.dp,
+                    "${result.news}/100" to 190.dp
+                ),
+                boldValue =
+                    true
+            )
+
+            TableDataRow(
+                listOf(
+                    "وضعیت اخبار" to 150.dp,
+                    newsLabel to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "اطمینان تحلیل" to 150.dp,
+                    "${newsSnapshot?.confidence ?: result.confidence}%" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "اثر در تصمیم نهایی" to 150.dp,
+                    newsEffect to 190.dp
+                )
             )
         }
 
-    } else {
+        Spacer(
+            modifier =
+                Modifier.height(10.dp)
+        )
 
-        newsItems.forEachIndexed {
-                index,
-                item ->
+        Text(
+            text =
+                "📰 ۵ خبر مهم مرتبط",
+            modifier =
+                Modifier.padding(
+                    horizontal = 8.dp,
+                    vertical = 4.dp
+                ),
+            style =
+                MaterialTheme.typography.titleMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        val newsItems =
+            newsSnapshot
+                ?.items
+                ?.take(5)
+                ?: emptyList()
+
+        if (newsItems.isEmpty()) {
 
             Card(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .padding(
-                            horizontal = 4.dp,
-                            vertical = 3.dp
-                        )
+                        .padding(4.dp),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    )
             ) {
 
-                Column(
+                Text(
+                    text =
+                        "برای این ارز خبر مرتبطی دریافت نشد.",
                     modifier =
                         Modifier.padding(12.dp),
-                    verticalArrangement =
-                        Arrangement.spacedBy(5.dp)
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+
+        } else {
+
+            newsItems.forEachIndexed {
+                    index,
+                    item ->
+
+                Card(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 4.dp,
+                                vertical = 3.dp
+                            )
                 ) {
 
-                    Text(
-                        text =
-                            "${index + 1}. ${item.title}",
-                        style =
-                            MaterialTheme.typography.bodyMedium,
-                        fontWeight =
-                            FontWeight.SemiBold
-                    )
-
-                    Row(
+                    Column(
                         modifier =
-                            Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(12.dp)
+                            Modifier.padding(12.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(5.dp)
                     ) {
 
                         Text(
                             text =
-                                "منبع: ${item.source.ifBlank { "نامشخص" }}",
+                                "${index + 1}. ${item.title}",
                             style =
-                                MaterialTheme.typography.bodySmall
-                        )
-
-                        Text(
-                            text =
-                                when {
-
-                                    item.sentiment >= 20 ->
-                                        "🟢 مثبت"
-
-                                    item.sentiment <= -20 ->
-                                        "🔴 منفی"
-
-                                    else ->
-                                        "🟡 خنثی"
-                                },
-                            style =
-                                MaterialTheme.typography.bodySmall,
+                                MaterialTheme.typography.bodyMedium,
                             fontWeight =
-                                FontWeight.Bold
+                                FontWeight.SemiBold
                         )
+
+                        Row(
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.spacedBy(12.dp)
+                        ) {
+
+                            Text(
+                                text =
+                                    "منبع: ${item.source.ifBlank { "نامشخص" }}",
+                                style =
+                                    MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text =
+                                    when {
+
+                                        item.sentiment >= 20 ->
+                                            "🟢 مثبت"
+
+                                        item.sentiment <= -20 ->
+                                            "🔴 منفی"
+
+                                        else ->
+                                            "🟡 خنثی"
+                                    },
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
         }
     }
-}
-
 }
 
 @Composable
 private fun AnalysisTable(
-result: AnalysisResult
+    result: AnalysisResult
 ) {
 
-val breakoutText =
-    if (result.structure.breakout) {
-        "بله"
-    } else {
-        "خیر"
-    }
+    val breakoutText =
+        if (result.structure.breakout) {
+            "بله"
+        } else {
+            "خیر"
+        }
 
-val breakdownText =
-    if (result.structure.breakdown) {
-        "بله"
-    } else {
-        "خیر"
-    }
+    val breakdownText =
+        if (result.structure.breakdown) {
+            "بله"
+        } else {
+            "خیر"
+        }
 
-TableCard(
-    title =
-        "📊 جدول تحلیل بازار"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "بخش" to 170.dp,
-                "نتیجه" to 190.dp
-            )
+    TableCard(
+        title =
+            "📊 جدول تحلیل بازار"
     ) {
 
-        TableHeaderRow(
-            listOf(
-                "بخش" to 170.dp,
-                "نتیجه" to 190.dp
-            )
-        )
+        SharedTable(
+            columns =
+                listOf(
+                    "بخش" to 170.dp,
+                    "نتیجه" to 190.dp
+                )
+        ) {
 
-        TableDataRow(
-            listOf(
-                "ساختار بازار" to 170.dp,
-                result.structure.label to 190.dp
+            TableHeaderRow(
+                listOf(
+                    "بخش" to 170.dp,
+                    "نتیجه" to 190.dp
+                )
             )
-        )
-
-        TableDataRow(
-            listOf(
-                "Breakout" to 170.dp,
-                breakoutText to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Breakdown" to 170.dp,
-                breakdownText to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "حمایت" to 170.dp,
-                formatPrice(result.structure.support) to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "مقاومت" to 170.dp,
-                formatPrice(result.structure.resistance) to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "واگرایی" to 170.dp,
-                result.divergence.label to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "رژیم BTC" to 170.dp,
-                result.btcRegime.label to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "امتیاز اخبار" to 170.dp,
-                "${result.news}/100" to 170.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "اطمینان تحلیل" to 170.dp,
-                "${result.confidence}%" to 190.dp
-            )
-        )
-
-        result.timeframeScores.forEach { entry ->
 
             TableDataRow(
                 listOf(
-                    "تایم‌فریم ${entry.key}" to 170.dp,
-                    "${entry.value}/100" to 190.dp
+                    "ساختار بازار" to 170.dp,
+                    result.structure.label to 190.dp
                 )
             )
+
+            TableDataRow(
+                listOf(
+                    "Breakout" to 170.dp,
+                    breakoutText to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Breakdown" to 170.dp,
+                    breakdownText to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "حمایت" to 170.dp,
+                    formatPrice(result.structure.support) to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "مقاومت" to 170.dp,
+                    formatPrice(result.structure.resistance) to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "واگرایی" to 170.dp,
+                    result.divergence.label to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "رژیم BTC" to 170.dp,
+                    result.btcRegime.label to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "امتیاز اخبار" to 170.dp,
+                    "${result.news}/100" to 170.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "اطمینان تحلیل" to 170.dp,
+                    "${result.confidence}%" to 190.dp
+                )
+            )
+
+            result.timeframeScores.forEach { entry ->
+
+                TableDataRow(
+                    listOf(
+                        "تایم‌فریم ${entry.key}" to 170.dp,
+                        "${entry.value}/100" to 190.dp
+                    )
+                )
+            }
         }
     }
-}
-
 }
 
 @Composable
 private fun MoneyFlowTable(
-result: AnalysisResult
+    result: AnalysisResult
 ) {
 
-val flow =
-    result.moneyFlowDetails
+    val flow =
+        result.moneyFlowDetails
 
-TableCard(
-    title =
-        "💰 جریان پول"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "دوره" to 85.dp,
-                "ورود" to 105.dp,
-                "ورود سنگین" to 105.dp,
-                "خروج" to 105.dp,
-                "خروج سنگین" to 105.dp,
-                "Net" to 105.dp,
-                "وضعیت" to 125.dp
-            )
+    TableCard(
+        title =
+            "💰 جریان پول"
     ) {
 
-        TableHeaderRow(
-            listOf(
-                "دوره" to 85.dp,
-                "ورود" to 105.dp,
-                "ورود سنگین" to 105.dp,
-                "خروج" to 105.dp,
-                "خروج سنگین" to 105.dp,
-                "Net" to 105.dp,
-                "وضعیت" to 125.dp
-            )
-        )
-
-        if (flow.periods.isEmpty()) {
-
-            TableDataRow(
+        SharedTable(
+            columns =
                 listOf(
-                    "داده" to 85.dp,
-                    "داده‌ای موجود نیست" to 650.dp
+                    "دوره" to 85.dp,
+                    "ورود" to 105.dp,
+                    "ورود سنگین" to 105.dp,
+                    "خروج" to 105.dp,
+                    "خروج سنگین" to 105.dp,
+                    "Net" to 105.dp,
+                    "وضعیت" to 125.dp
+                )
+        ) {
+
+            TableHeaderRow(
+                listOf(
+                    "دوره" to 85.dp,
+                    "ورود" to 105.dp,
+                    "ورود سنگین" to 105.dp,
+                    "خروج" to 105.dp,
+                    "خروج سنگین" to 105.dp,
+                    "Net" to 105.dp,
+                    "وضعیت" to 125.dp
                 )
             )
 
-        } else {
-
-            flow.periods.forEach { entry ->
-
-                val period =
-                    entry.value
-
-                val unusualInflowText =
-                    if (period.unusualInflow > 0) {
-                        "بله (${period.unusualInflow})"
-                    } else {
-                        "خیر"
-                    }
-
-                val unusualOutflowText =
-                    if (period.unusualOutflow > 0) {
-                        "بله (${period.unusualOutflow})"
-                    } else {
-                        "خیر"
-                    }
+            if (flow.periods.isEmpty()) {
 
                 TableDataRow(
                     listOf(
-                        period.title to 85.dp,
-
-                        formatMoney(
-                            period.inflowUsd
-                        ) to 105.dp,
-
-                        unusualInflowText to 105.dp,
-
-                        formatMoney(
-                            period.outflowUsd
-                        ) to 105.dp,
-
-                        unusualOutflowText to 105.dp,
-
-                        formatMoney(
-                            period.netFlowUsd
-                        ) to 105.dp,
-
-                        period.status to 125.dp
+                        "داده" to 85.dp,
+                        "داده‌ای موجود نیست" to 650.dp
                     )
                 )
+
+            } else {
+
+                flow.periods.forEach { entry ->
+
+                    val period =
+                        entry.value
+
+                    val unusualInflowText =
+                        if (period.unusualInflow > 0) {
+                            "بله (${period.unusualInflow})"
+                        } else {
+                            "خیر"
+                        }
+
+                    val unusualOutflowText =
+                        if (period.unusualOutflow > 0) {
+                            "بله (${period.unusualOutflow})"
+                        } else {
+                            "خیر"
+                        }
+
+                    TableDataRow(
+                        listOf(
+                            period.title to 85.dp,
+
+                            formatMoney(
+                                period.inflowUsd
+                            ) to 105.dp,
+
+                            unusualInflowText to 105.dp,
+
+                            formatMoney(
+                                period.outflowUsd
+                            ) to 105.dp,
+
+                            unusualOutflowText to 105.dp,
+
+                            formatMoney(
+                                period.netFlowUsd
+                            ) to 105.dp,
+
+                            period.status to 125.dp
+                        )
+                    )
+                }
             }
         }
+
+        Spacer(
+            modifier =
+                Modifier.height(8.dp)
+        )
+
+        SharedTable(
+            columns =
+                listOf(
+                    "شاخص" to 170.dp,
+                    "مقدار" to 190.dp
+                )
+        ) {
+
+            TableHeaderRow(
+                listOf(
+                    "شاخص" to 170.dp,
+                    "مقدار" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "وضعیت کلی" to 170.dp,
+                    flow.label to 190.dp
+                ),
+                boldValue =
+                    true
+            )
+
+            TableDataRow(
+                listOf(
+                    "Money Flow Score" to 170.dp,
+                    "${flow.score}/100" to 190.dp
+                )
+            )
+
+            TableDataRow(
+                listOf(
+                    "Confidence" to 170.dp,
+                    "${flow.confidence}%" to 190.dp
+                )
+            )
+        }
     }
-
-    Spacer(
-        modifier =
-            Modifier.height(8.dp)
-    )
-
-    SharedTable(
-        columns =
-            listOf(
-                "شاخص" to 170.dp,
-                "مقدار" to 190.dp
-            )
-    ) {
-
-        TableHeaderRow(
-            listOf(
-                "شاخص" to 170.dp,
-                "مقدار" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "وضعیت کلی" to 170.dp,
-                flow.label to 190.dp
-            ),
-            boldValue =
-                true
-        )
-
-        TableDataRow(
-            listOf(
-                "Money Flow Score" to 170.dp,
-                "${flow.score}/100" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Confidence" to 170.dp,
-                "${flow.confidence}%" to 190.dp
-            )
-        )
-    }
-}
-
 }
 
 @Composable
 private fun ReasonsTable(
-result: AnalysisResult
+    result: AnalysisResult
 ) {
 
-if (result.reasons.isEmpty()) {
-    return
-}
+    if (result.reasons.isEmpty()) {
+        return
+    }
 
-TableCard(
-    title =
-        "🧠 دلایل اصلی تحلیل"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "#" to 50.dp,
-                "دلیل" to 420.dp
-            )
+    TableCard(
+        title =
+            "🧠 دلایل اصلی تحلیل"
     ) {
 
-        TableHeaderRow(
-            listOf(
-                "#" to 50.dp,
-                "دلیل" to 420.dp
-            )
-        )
-
-        result.reasons
-            .take(10)
-            .forEachIndexed {
-                    index,
-                    reason ->
-
-                TableDataRow(
-                    listOf(
-                        "${index + 1}" to 50.dp,
-                        reason to 420.dp
-                    )
+        SharedTable(
+            columns =
+                listOf(
+                    "#" to 50.dp,
+                    "دلیل" to 420.dp
                 )
-            }
-    }
-}
+        ) {
 
+            TableHeaderRow(
+                listOf(
+                    "#" to 50.dp,
+                    "دلیل" to 420.dp
+                )
+            )
+
+            result.reasons
+                .take(10)
+                .forEachIndexed {
+                        index,
+                        reason ->
+
+                    TableDataRow(
+                        listOf(
+                            "${index + 1}" to 50.dp,
+                            reason to 420.dp
+                        )
+                    )
+                }
+        }
+    }
 }
 
 @Composable
 private fun MarketSummaryTable(
-scan: MarketScanResult
+    scan: MarketScanResult
 ) {
 
-TableCard(
-    title =
-        "🌐 خلاصه اسکن بازار"
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "شاخص" to 190.dp,
-                "مقدار" to 190.dp
-            )
+    TableCard(
+        title =
+            "🌐 خلاصه اسکن بازار"
     ) {
 
-        TableHeaderRow(
-            listOf(
-                "شاخص" to 190.dp,
-                "مقدار" to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "کل بازار بررسی‌شده" to 190.dp,
-                scan.universeCount.toString() to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "ارزهای تحلیل‌شده" to 190.dp,
-                scan.analyzedCount.toString() to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Top 10 کل بازار" to 190.dp,
-                scan.top10All.size.toString() to 190.dp
-            )
-        )
-
-        TableDataRow(
-            listOf(
-                "Top 10 رتبه 1 تا 100" to 190.dp,
-                scan.top10Top100.size.toString() to 190.dp
-            )
-        )
-    }
-}
-
-}
-
-@Composable
-private fun CandidateTable(
-candidates: List<ScanCandidate>
-) {
-
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    SharedTable(
-        columns =
-            listOf(
-                "ارز" to 105.dp,
-                "پیشنهاد" to 135.dp,
-                "امتیاز تحلیل" to 100.dp,
-                "ورود پول" to 105.dp,
-                "ورود سنگین پول" to 125.dp,
-                "ورود غیرطبیعی پول" to 145.dp
-            )
-    ) {
-
-        TableHeaderRow(
-            listOf(
-                "ارز" to 105.dp,
-                "پیشنهاد" to 135.dp,
-                "امتیاز تحلیل" to 100.dp,
-                "ورود پول" to 105.dp,
-                "ورود سنگین پول" to 125.dp,
-                "ورود غیرطبیعی پول" to 145.dp
-            )
-        )
-
-        candidates.forEach { candidate ->
-
-            val result =
-                candidate.result
-
-            val heavyInflow =
-                isHeavyInflow(
-                    result.moneyFlowDetails.label
+        SharedTable(
+            columns =
+                listOf(
+                    "شاخص" to 190.dp,
+                    "مقدار" to 190.dp
                 )
+        ) {
 
-            val recentPeriods =
-                listOfNotNull(
-                    result.moneyFlowDetails.periods["1D"],
-                    result.moneyFlowDetails.periods["2D"],
-                    result.moneyFlowDetails.periods["3D"]
+            TableHeaderRow(
+                listOf(
+                    "شاخص" to 190.dp,
+                    "مقدار" to 190.dp
                 )
-
-            val unusualInflowCount =
-                recentPeriods.count {
-                    it.unusualInflow > 0
-                }
-
-            val heavyInflowText =
-                if (heavyInflow) {
-                    "بله"
-                } else {
-                    "خیر"
-                }
-
-            val unusualInflowText =
-                if (unusualInflowCount > 0) {
-                    "بله ($unusualInflowCount دوره)"
-                } else {
-                    "خیر"
-                }
+            )
 
             TableDataRow(
                 listOf(
-                    candidate.symbol to 105.dp,
+                    "کل بازار بررسی‌شده" to 190.dp,
+                    scan.universeCount.toString() to 190.dp
+                )
+            )
 
-                    finalSignal(result) to 135.dp,
+            TableDataRow(
+                listOf(
+                    "ارزهای تحلیل‌شده" to 190.dp,
+                    scan.analyzedCount.toString() to 190.dp
+                )
+            )
 
-                    "${result.score}/100" to 100.dp,
+            TableDataRow(
+                listOf(
+                    "Top 10 کل بازار" to 190.dp,
+                    scan.top10All.size.toString() to 190.dp
+                )
+            )
 
-                    "${result.moneyFlow}/100" to 105.dp,
-
-                    heavyInflowText to 125.dp,
-
-                    unusualInflowText to 145.dp
+            TableDataRow(
+                listOf(
+                    "Top 10 رتبه 1 تا 100" to 190.dp,
+                    scan.top10Top100.size.toString() to 190.dp
                 )
             )
         }
     }
 }
 
+@Composable
+private fun CandidateTable(
+    candidates: List<ScanCandidate>
+) {
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
+
+        SharedTable(
+            columns =
+                listOf(
+                    "ارز" to 105.dp,
+                    "پیشنهاد" to 135.dp,
+                    "امتیاز تحلیل" to 100.dp,
+                    "ورود پول" to 105.dp,
+                    "ورود سنگین پول" to 125.dp,
+                    "ورود غیرطبیعی پول" to 145.dp
+                )
+        ) {
+
+            TableHeaderRow(
+                listOf(
+                    "ارز" to 105.dp,
+                    "پیشنهاد" to 135.dp,
+                    "امتیاز تحلیل" to 100.dp,
+                    "ورود پول" to 105.dp,
+                    "ورود سنگین پول" to 125.dp,
+                    "ورود غیرطبیعی پول" to 145.dp
+                )
+            )
+
+            candidates.forEach { candidate ->
+
+                val result =
+                    candidate.result
+
+                val heavyInflow =
+                    isHeavyInflow(
+                        result.moneyFlowDetails.label
+                    )
+
+                val recentPeriods =
+                    listOfNotNull(
+                        result.moneyFlowDetails.periods["1D"],
+                        result.moneyFlowDetails.periods["2D"],
+                        result.moneyFlowDetails.periods["3D"]
+                    )
+
+                val unusualInflowCount =
+                    recentPeriods.count {
+                        it.unusualInflow > 0
+                    }
+
+                val heavyInflowText =
+                    if (heavyInflow) {
+                        "بله"
+                    } else {
+                        "خیر"
+                    }
+
+                val unusualInflowText =
+                    if (unusualInflowCount > 0) {
+                        "بله ($unusualInflowCount دوره)"
+                    } else {
+                        "خیر"
+                    }
+
+                TableDataRow(
+                    listOf(
+                        candidate.symbol to 105.dp,
+
+                        finalSignal(result) to 135.dp,
+
+                        "${result.score}/100" to 100.dp,
+
+                        "${result.moneyFlow}/100" to 105.dp,
+
+                        heavyInflowText to 125.dp,
+
+                        unusualInflowText to 145.dp
+                    )
+                )
+            }
+        }
+    }
 }
 
 @Composable
 private fun SharedTable(
-columns: List<Pair<String, Dp>>,
-content: @Composable () -> Unit
+    columns: List<Pair<String, Dp>>,
+    content: @Composable () -> Unit
 ) {
 
-val scrollState =
-    rememberScrollState()
+    val scrollState =
+        rememberScrollState()
 
-val totalWidth =
-    columns.fold(0.dp) {
-            total,
-            column ->
-        total + column.second
-    }
+    val totalWidth =
+        columns.fold(0.dp) {
+                total,
+                column ->
+            total + column.second
+        }
 
-Box(
-    modifier =
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(
-                scrollState
-            )
-) {
-
-    Column(
+    Box(
         modifier =
-            Modifier.width(totalWidth)
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(
+                    scrollState
+                )
     ) {
 
-        content()
-    }
-}
+        Column(
+            modifier =
+                Modifier.width(totalWidth)
+        ) {
 
+            content()
+        }
+    }
 }
 
 @Composable
 private fun TableHeaderRow(
-cells: List<Pair<String, Dp>>
+    cells: List<Pair<String, Dp>>
 ) {
 
-Row(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
+    Row(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
 
-    cells.forEach {
-            (text, width) ->
+        cells.forEach {
+                (text, width) ->
 
-        TableCell(
-            text =
-                text,
-            width =
-                width,
-            bold =
-                true
-        )
+            TableCell(
+                text =
+                    text,
+                width =
+                    width,
+                bold =
+                    true
+            )
+        }
     }
-}
-
 }
 
 @Composable
 private fun TableDataRow(
-cells: List<Pair<String, Dp>>,
-boldValue: Boolean = false
+    cells: List<Pair<String, Dp>>,
+    boldValue: Boolean = false
 ) {
 
-Row(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
+    Row(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
 
-    cells.forEachIndexed {
-            index,
-            cell ->
+        cells.forEachIndexed {
+                index,
+                cell ->
 
-        val text =
-            cell.first
+            val text =
+                cell.first
 
-        val width =
-            cell.second
+            val width =
+                cell.second
 
-        TableCell(
-            text =
-                text,
-            width =
-                width,
-            bold =
-                boldValue &&
-                    index == cells.lastIndex
-        )
+            TableCell(
+                text =
+                    text,
+                width =
+                    width,
+                bold =
+                    boldValue &&
+                        index == cells.lastIndex
+            )
+        }
     }
-}
-
 }
 
 @Composable
 private fun TableCard(
-title: String,
-content: @Composable () -> Unit
+    title: String,
+    content: @Composable () -> Unit
 ) {
 
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    Column(
+    Card(
         modifier =
-            Modifier.padding(8.dp),
-        verticalArrangement =
-            Arrangement.spacedBy(2.dp)
+            Modifier.fillMaxWidth()
     ) {
 
-        Text(
-            text =
-                title,
-            style =
-                MaterialTheme.typography.titleLarge,
-            fontWeight =
-                FontWeight.Bold,
+        Column(
             modifier =
-                Modifier.padding(
-                    start = 8.dp,
-                    top = 6.dp,
-                    bottom = 8.dp
-                )
-        )
+                Modifier.padding(8.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(2.dp)
+        ) {
 
-        content()
+            Text(
+                text =
+                    title,
+                style =
+                    MaterialTheme.typography.titleLarge,
+                fontWeight =
+                    FontWeight.Bold,
+                modifier =
+                    Modifier.padding(
+                        start = 8.dp,
+                        top = 6.dp,
+                        bottom = 8.dp
+                    )
+            )
+
+            content()
+        }
     }
-}
-
 }
 
 @Composable
 private fun TableCell(
-text: String,
-width: Dp,
-bold: Boolean = false
+    text: String,
+    width: Dp,
+    bold: Boolean = false
 ) {
 
-Box(
-    modifier =
-        Modifier
-            .width(width)
-            .padding(
-                horizontal = 1.dp,
-                vertical = 1.dp
-            )
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant
-            )
-            .padding(
-                horizontal = 7.dp,
-                vertical = 9.dp
-            )
+    Box(
+        modifier =
+            Modifier
+                .width(width)
+                .padding(
+                    horizontal = 1.dp,
+                    vertical = 1.dp
+                )
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant
+                )
+                .padding(
+                    horizontal = 7.dp,
+                    vertical = 9.dp
+                )
+    ) {
+
+        Text(
+            text =
+                text,
+            style =
+                MaterialTheme.typography.bodySmall,
+            fontWeight =
+                if (bold) {
+                    FontWeight.Bold
+                } else {
+                    FontWeight.Normal
+                }
+        )
+    }
+}
+
+@Composable
+private fun SectionTitle(
+    text: String
 ) {
 
     Text(
         text =
             text,
         style =
-            MaterialTheme.typography.bodySmall,
+            MaterialTheme.typography.headlineSmall,
         fontWeight =
-            if (bold) {
-                FontWeight.Bold
-            } else {
-                FontWeight.Normal
-            }
+            FontWeight.Bold
     )
-}
-
-}
-
-@Composable
-private fun SectionTitle(
-text: String
-) {
-
-Text(
-    text =
-        text,
-    style =
-        MaterialTheme.typography.headlineSmall,
-    fontWeight =
-        FontWeight.Bold
-)
-
 }
 
 @Composable
 private fun EmptyCard(
-text: String
+    text: String
 ) {
 
-Card(
-    modifier =
-        Modifier.fillMaxWidth()
-) {
-
-    Text(
-        text =
-            text,
+    Card(
         modifier =
-            Modifier.padding(16.dp)
-    )
-}
+            Modifier.fillMaxWidth()
+    ) {
 
+        Text(
+            text =
+                text,
+            modifier =
+                Modifier.padding(16.dp)
+        )
+    }
 }
 
 private fun finalSignal(
-result: AnalysisResult
+    result: AnalysisResult
 ): String {
 
-val score =
-    result.score.coerceIn(
-        0,
-        100
-    )
+    val score =
+        result.score.coerceIn(
+            0,
+            100
+        )
 
-val confidence =
-    result.confidence.coerceIn(
-        0,
-        100
-    )
+    val confidence =
+        result.confidence.coerceIn(
+            0,
+            100
+        )
 
-val pump =
-    result.pump.coerceIn(
-        0,
-        100
-    )
+    val pump =
+        result.pump.coerceIn(
+            0,
+            100
+        )
 
-val dump =
-    result.dump.coerceIn(
-        0,
-        100
-    )
+    val dump =
+        result.dump.coerceIn(
+            0,
+            100
+        )
 
-val heavyInflow =
-    isHeavyInflow(
-        result.moneyFlowDetails.label
-    )
+    val heavyInflow =
+        isHeavyInflow(
+            result.moneyFlowDetails.label
+        )
 
-val heavyOutflow =
-    isHeavyOutflow(
-        result.moneyFlowDetails.label
-    )
+    val heavyOutflow =
+        isHeavyOutflow(
+            result.moneyFlowDetails.label
+        )
 
-if (
-    score >= 82 &&
-    confidence >= 75 &&
-    pump >= 75 &&
-    heavyInflow &&
-    result.news >= 45 &&
-    !heavyOutflow
-) {
+    if (
+        score >= 82 &&
+        confidence >= 75 &&
+        pump >= 75 &&
+        heavyInflow &&
+        result.news >= 45 &&
+        !heavyOutflow
+    ) {
 
-    return "🟢 پیشنهاد خرید قوی"
-}
+        return "🟢 پیشنهاد خرید قوی"
+    }
 
-if (
-    score <= 25 &&
-    confidence >= 75 &&
-    dump >= 75 &&
-    heavyOutflow &&
-    result.news <= 55 &&
-    !heavyInflow
-) {
+    if (
+        score <= 25 &&
+        confidence >= 75 &&
+        dump >= 75 &&
+        heavyOutflow &&
+        result.news <= 55 &&
+        !heavyInflow
+    ) {
 
-    return "🔴 پیشنهاد فروش قوی"
-}
+        return "🔴 پیشنهاد فروش قوی"
+    }
 
-if (
-    score >= 70 &&
-    confidence >= 60 &&
-    pump >= 65 &&
-    !heavyOutflow
-) {
+    if (
+        score >= 70 &&
+        confidence >= 60 &&
+        pump >= 65 &&
+        !heavyOutflow
+    ) {
 
-    return "🟢 پیشنهاد خرید"
-}
+        return "🟢 پیشنهاد خرید"
+    }
 
-if (
-    score <= 35 &&
-    confidence >= 60 &&
-    dump >= 65 &&
-    !heavyInflow
-) {
+    if (
+        score <= 35 &&
+        confidence >= 60 &&
+        dump >= 65 &&
+        !heavyInflow
+    ) {
 
-    return "🔴 پیشنهاد فروش"
-}
+        return "🔴 پیشنهاد فروش"
+    }
 
-return "🟡 نگهداری / انتظار"
-
+    return "🟡 نگهداری / انتظار"
 }
 
 private fun isHeavyInflow(
-label: String
+    label: String
 ): Boolean {
 
-val normalized =
-    label
-        .trim()
-        .uppercase(Locale.US)
+    val normalized =
+        label
+            .trim()
+            .uppercase(Locale.US)
 
-return normalized.contains(
-    "HEAVY INFLOW"
-) ||
-    normalized.contains(
-        "INFLOW HEAVY"
+    return normalized.contains(
+        "HEAVY INFLOW"
     ) ||
-    label.contains(
-        "ورود سنگین"
-    ) ||
-    label.contains(
-        "ورود غیرعادی"
-    )
-
+        normalized.contains(
+            "INFLOW HEAVY"
+        ) ||
+        label.contains(
+            "ورود سنگین"
+        ) ||
+        label.contains(
+            "ورود غیرعادی"
+        )
 }
 
 private fun isHeavyOutflow(
-label: String
+    label: String
 ): Boolean {
 
-val normalized =
-    label
-        .trim()
-        .uppercase(Locale.US)
+    val normalized =
+        label
+            .trim()
+            .uppercase(Locale.US)
 
-return normalized.contains(
-    "HEAVY OUTFLOW"
-) ||
-    normalized.contains(
-        "OUTFLOW HEAVY"
+    return normalized.contains(
+        "HEAVY OUTFLOW"
     ) ||
-    label.contains(
-        "خروج سنگین"
-    ) ||
-    label.contains(
-        "خروج غیرعادی"
-    )
-
+        normalized.contains(
+            "OUTFLOW HEAVY"
+        ) ||
+        label.contains(
+            "خروج سنگین"
+        ) ||
+        label.contains(
+            "خروج غیرعادی"
+        )
 }
 
 private fun normalizeSymbol(
-value: String
+    value: String
 ): String {
 
-var s =
-    value
-        .trim()
-        .uppercase(Locale.US)
-        .replace("/", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace(" ", "")
+    var s =
+        value
+            .trim()
+            .uppercase(Locale.US)
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
 
-if (s.isBlank()) {
-    s =
-        "BTCUSDT"
-}
+    if (s.isBlank()) {
+        s =
+            "BTCUSDT"
+    }
 
-if (!s.endsWith("USDT")) {
-    s += "USDT"
-}
+    if (!s.endsWith("USDT")) {
+        s += "USDT"
+    }
 
-return s
-
+    return s
 }
 
 private fun formatMoney(
-value: Double
+    value: Double
 ): String {
 
-val absolute =
-    abs(value)
+    val absolute =
+        abs(value)
 
-return when {
+    return when {
 
-    absolute >=
-        1_000_000_000.0 ->
+        absolute >=
+            1_000_000_000.0 ->
 
-        "$" +
-            String.format(
-                Locale.US,
-                "%.2fB",
-                value /
-                    1_000_000_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fB",
+                    value /
+                        1_000_000_000.0
+                )
 
-    absolute >=
-        1_000_000.0 ->
+        absolute >=
+            1_000_000.0 ->
 
-        "$" +
-            String.format(
-                Locale.US,
-                "%.2fM",
-                value /
-                    1_000_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fM",
+                    value /
+                        1_000_000.0
+                )
 
-    absolute >=
-        1_000.0 ->
+        absolute >=
+            1_000.0 ->
 
-        "$" +
-            String.format(
-                Locale.US,
-                "%.2fK",
-                value /
-                    1_000.0
-            )
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2fK",
+                    value /
+                        1_000.0
+                )
 
-    else ->
+        else ->
 
-        "$" +
+            "$" +
+                String.format(
+                    Locale.US,
+                    "%.2f",
+                    value
+                )
+    }
+}
+
+private fun formatPrice(
+    value: Double
+): String {
+
+    return when {
+
+        value >= 1000.0 ->
+
             String.format(
                 Locale.US,
                 "%.2f",
                 value
             )
-}
 
-}
+        value >= 1.0 ->
 
-private fun formatPrice(
-value: Double
-): String {
+            String.format(
+                Locale.US,
+                "%.4f",
+                value
+            )
 
-return when {
+        else ->
 
-    value >= 1000.0 ->
-
-        String.format(
-            Locale.US,
-            "%.2f",
-            value
-        )
-
-    value >= 1.0 ->
-
-        String.format(
-            Locale.US,
-            "%.4f",
-            value
-        )
-
-    else ->
-
-        String.format(
-            Locale.US,
-            "%.8f",
-            value
-        )
-}
-
+            String.format(
+                Locale.US,
+                "%.8f",
+                value
+            )
+    }
 }
 
 private fun formatRR(
-value: Double
+    value: Double
 ): String {
 
-return String.format(
-    Locale.US,
-    "%.2f",
-    value
-)
-
+    return String.format(
+        Locale.US,
+        "%.2f",
+        value
+    )
 }
