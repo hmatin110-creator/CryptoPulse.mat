@@ -18,8 +18,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -58,6 +57,16 @@ val priceRepository =
         WatchlistPriceRepository()
     }
 
+val liveRepository =
+    remember {
+        LiveRepository()
+    }
+
+val newsRepository =
+    remember {
+        NewsRepository()
+    }
+
 var items by remember {
     mutableStateOf(
         watchlistRepository.getItems()
@@ -82,168 +91,183 @@ var message by remember {
     mutableStateOf("")
 }
 
-var loading by remember {
-    mutableStateOf(false)
+var loadingSymbols by remember {
+    mutableStateOf(emptySet<String>())
 }
 
-var analysisRunning by remember {
-    mutableStateOf(false)
+var analysisSymbols by remember {
+    mutableStateOf(emptySet<String>())
 }
 
-fun reloadAnalysis() {
+fun reloadAll() {
+    items =
+        watchlistRepository.getItems()
+
     analyses =
         analysisRepository.getAll()
 }
 
-fun refreshPrices() {
+fun refreshPriceFor(
+    symbol: String
+) {
 
-    if (loading) {
+    if (
+        symbol in loadingSymbols
+    ) {
         return
     }
 
-    loading = true
-    message = ""
+    loadingSymbols =
+        loadingSymbols + symbol
 
     scope.launch {
 
         try {
 
-            val currentItems =
-                watchlistRepository.getItems()
-
-            if (currentItems.isEmpty()) {
-                items = emptyList()
-                analyses =
-                    analysisRepository.getAll()
-                return@launch
-            }
-
-            val prices =
-                priceRepository.getPrices(
-                    currentItems.map {
-                        it.symbol
-                    }
+            val price =
+                priceRepository.getPrice(
+                    symbol
                 )
 
-            val now =
-                System.currentTimeMillis()
+            val currentItem =
+                watchlistRepository
+                    .getItems()
+                    .firstOrNull {
+                        it.symbol == symbol
+                    }
 
-            currentItems.forEach { item ->
+            if (
+                price != null &&
+                price > 0.0 &&
+                currentItem != null
+            ) {
 
-                val price =
-                    prices[item.symbol]
+                watchlistRepository.updateItem(
+                    symbol = symbol,
+                    buyPrice =
+                        currentItem.buyPrice,
+                    currentPrice = price,
+                    lastUpdated =
+                        System.currentTimeMillis(),
+                    alertTriggered =
+                        currentItem.alertTriggered
+                )
 
-                if (
-                    price != null &&
-                    price > 0.0
-                ) {
+                message =
+                    "✅ قیمت $symbol به‌روزرسانی شد"
 
-                    watchlistRepository.updateItem(
-                        symbol = item.symbol,
-                        buyPrice = item.buyPrice,
-                        currentPrice = price,
-                        lastUpdated = now,
-                        alertTriggered = item.alertTriggered
-                    )
-                }
+            } else {
+
+                message =
+                    "❌ قیمت $symbol دریافت نشد"
             }
 
-            items =
-                watchlistRepository.getItems()
-
-            reloadAnalysis()
-
-            message =
-                if (prices.isEmpty()) {
-                    "قیمت‌ها دریافت نشدند"
-                } else {
-                    "قیمت‌ها به‌روزرسانی شدند"
-                }
+            reloadAll()
 
         } catch (_: Exception) {
 
             message =
-                "خطا در دریافت قیمت‌ها"
+                "❌ خطا در دریافت قیمت $symbol"
 
         } finally {
 
-            loading = false
+            loadingSymbols =
+                loadingSymbols - symbol
         }
     }
 }
 
-fun runAnalysisNow() {
+fun analyzeCoin(
+    symbol: String
+) {
 
     if (
-        analysisRunning ||
-        items.isEmpty()
+        symbol in analysisSymbols
     ) {
         return
     }
 
-    analysisRunning = true
+    analysisSymbols =
+        analysisSymbols + symbol
+
     message =
-        "تحلیل واچ‌لیست شروع شد..."
-
-    val analysisStart =
-        System.currentTimeMillis()
-
-    WatchlistWorkScheduler.runNow(
-        context
-    )
+        "🤖 در حال تحلیل $symbol ..."
 
     scope.launch {
 
-        var completed = false
+        try {
 
-        repeat(20) {
+            val snapshot =
+                liveRepository.loadForScan(
+                    symbol
+                )
 
-            delay(2500)
+            if (
+                snapshot.candles.size < 60
+            ) {
 
-            items =
-                watchlistRepository.getItems()
+                message =
+                    "❌ داده کافی برای تحلیل $symbol دریافت نشد"
 
-            reloadAnalysis()
+                return@launch
+            }
 
-            val currentItems =
-                watchlistRepository.getItems()
+            val news =
+                newsRepository.load(
+                    symbol
+                )
 
-            val currentAnalyses =
+            val flow =
+                MarketFlowData(
+                    openInterest =
+                        snapshot.openInterest,
+                    fundingRate =
+                        snapshot.fundingRate,
+                    openInterestHistory =
+                        snapshot.openInterestHistory,
+                    longShortHistory =
+                        snapshot.longShortHistory,
+                    takerVolumeHistory =
+                        snapshot.takerVolumeHistory
+                )
+
+            val result =
+                AnalysisEngine.analyze(
+                    candles =
+                        snapshot.candles,
+                    flow = flow,
+                    newsScore =
+                        news.score,
+                    newsConfidence =
+                        news.confidence,
+                    btcCandles =
+                        snapshot.btcCandles
+                )
+
+            analysisRepository.saveFromResult(
+                symbol = symbol,
+                result = result,
+                signal = result.signal,
+                analyzedAt =
+                    System.currentTimeMillis()
+            )
+
+            analyses =
                 analysisRepository.getAll()
 
-            completed =
-                currentItems.isNotEmpty() &&
-                    currentItems.all { item ->
+            message =
+                "✅ تحلیل $symbol به‌روزرسانی شد"
 
-                        currentAnalyses
-                            .firstOrNull {
-                                it.symbol ==
-                                    item.symbol
-                            }
-                            ?.lastAnalyzed
-                            ?.let {
-                                it >= analysisStart
-                            } == true
-                    }
+        } catch (_: Exception) {
 
-            if (completed) {
-                return@repeat
-            }
+            message =
+                "❌ تحلیل $symbol انجام نشد"
+
+        } finally {
+
+            analysisSymbols =
+                analysisSymbols - symbol
         }
-
-        items =
-            watchlistRepository.getItems()
-
-        reloadAnalysis()
-
-        analysisRunning = false
-
-        message =
-            if (completed) {
-                "✅ تحلیل واچ‌لیست با موفقیت به‌روزرسانی شد"
-            } else {
-                "⏳ تحلیل در پس‌زمینه ادامه دارد؛ چند لحظه بعد دوباره صفحه را بررسی کن"
-            }
     }
 }
 
@@ -288,8 +312,7 @@ fun addCoin() {
         symbolInput = ""
         buyPriceInput = ""
 
-        items =
-            watchlistRepository.getItems()
+        reloadAll()
 
         message =
             "✅ ارز به واچ‌لیست اضافه شد"
@@ -307,7 +330,9 @@ fun addCoin() {
     }
 }
 
-fun removeCoin(symbol: String) {
+fun removeCoin(
+    symbol: String
+) {
 
     watchlistRepository.removeItem(
         symbol
@@ -317,11 +342,7 @@ fun removeCoin(symbol: String) {
         symbol
     )
 
-    items =
-        watchlistRepository.getItems()
-
-    analyses =
-        analysisRepository.getAll()
+    reloadAll()
 
     message =
         "ارز از واچ‌لیست حذف شد"
@@ -329,12 +350,13 @@ fun removeCoin(symbol: String) {
 
 LaunchedEffect(Unit) {
 
-    items =
-        watchlistRepository.getItems()
+    reloadAll()
 
-    reloadAnalysis()
-
-    refreshPrices()
+    items.forEach { item ->
+        refreshPriceFor(
+            item.symbol
+        )
+    }
 }
 
 LazyColumn(
@@ -474,93 +496,6 @@ LazyColumn(
         }
     }
 
-    item {
-
-        Card(
-            modifier =
-                Modifier.fillMaxWidth()
-        ) {
-
-            Column(
-                modifier =
-                    Modifier.padding(14.dp)
-            ) {
-
-                Row(
-                    modifier =
-                        Modifier.fillMaxWidth(),
-                    horizontalArrangement =
-                        Arrangement.SpaceBetween,
-                    verticalAlignment =
-                        Alignment.CenterVertically
-                ) {
-
-                    Text(
-                        text = "📈 ارزهای من",
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            refreshPrices()
-                        },
-                        enabled =
-                            !loading &&
-                                !analysisRunning
-                    ) {
-
-                        Text(
-                            if (loading) {
-                                "در حال دریافت..."
-                            } else {
-                                "🔄 قیمت‌ها"
-                            }
-                        )
-                    }
-                }
-
-                Spacer(
-                    modifier =
-                        Modifier.height(8.dp)
-                )
-
-                Button(
-                    onClick = {
-                        runAnalysisNow()
-                    },
-                    modifier =
-                        Modifier.fillMaxWidth(),
-                    enabled =
-                        items.isNotEmpty() &&
-                            !analysisRunning &&
-                            !loading
-                ) {
-
-                    Text(
-                        if (analysisRunning) {
-                            "🤖 در حال تحلیل..."
-                        } else {
-                            "🤖 تحلیل الآن"
-                        }
-                    )
-                }
-
-                Spacer(
-                    modifier =
-                        Modifier.height(8.dp)
-                )
-
-                Text(
-                    text =
-                        "تحلیل واچ‌لیست هر ۶ ساعت انجام می‌شود و افت ۵٪ هشدار ایجاد می‌کند.",
-                    style =
-                        MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-    }
-
     if (items.isEmpty()) {
 
         item {
@@ -597,6 +532,20 @@ LazyColumn(
             WatchlistItemCard(
                 item = item,
                 analysis = analysis,
+                priceLoading =
+                    item.symbol in loadingSymbols,
+                analysisLoading =
+                    item.symbol in analysisSymbols,
+                onRefreshPrice = {
+                    refreshPriceFor(
+                        item.symbol
+                    )
+                },
+                onAnalyze = {
+                    analyzeCoin(
+                        item.symbol
+                    )
+                },
                 onRemove = {
                     removeCoin(
                         item.symbol
@@ -613,6 +562,10 @@ LazyColumn(
 private fun WatchlistItemCard(
 item: WatchlistItem,
 analysis: WatchlistAnalysisSnapshot?,
+priceLoading: Boolean,
+analysisLoading: Boolean,
+onRefreshPrice: () -> Unit,
+onAnalyze: () -> Unit,
 onRemove: () -> Unit
 ) {
 
@@ -647,6 +600,71 @@ Card(
                 onClick = onRemove
             ) {
                 Text("حذف")
+            }
+        }
+
+        Spacer(
+            modifier =
+                Modifier.height(8.dp)
+        )
+
+        Text(
+            text =
+                item.currentPrice?.let {
+                    "💰 قیمت فعلی: ${formatPrice(it)}"
+                } ?: "💰 قیمت فعلی: دریافت نشده",
+            style =
+                MaterialTheme.typography.titleMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        Spacer(
+            modifier =
+                Modifier.height(10.dp)
+        )
+
+        Row(
+            modifier =
+                Modifier.fillMaxWidth(),
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+
+            Button(
+                onClick = onRefreshPrice,
+                modifier =
+                    Modifier.weight(1f),
+                enabled =
+                    !priceLoading &&
+                        !analysisLoading
+            ) {
+
+                Text(
+                    if (priceLoading) {
+                        "در حال دریافت..."
+                    } else {
+                        "💰 قیمت الآن"
+                    }
+                )
+            }
+
+            Button(
+                onClick = onAnalyze,
+                modifier =
+                    Modifier.weight(1f),
+                enabled =
+                    !priceLoading &&
+                        !analysisLoading
+            ) {
+
+                Text(
+                    if (analysisLoading) {
+                        "در حال تحلیل..."
+                    } else {
+                        "🤖 تحلیل الآن"
+                    }
+                )
             }
         }
 
