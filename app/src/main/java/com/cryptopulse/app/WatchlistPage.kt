@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -74,6 +75,10 @@ fun WatchlistPage(
     }
 
     var loading by remember {
+        mutableStateOf(false)
+    }
+
+    var analysisRunning by remember {
         mutableStateOf(false)
     }
 
@@ -132,6 +137,66 @@ fun WatchlistPage(
             } finally {
                 loading = false
             }
+        }
+    }
+
+    fun runAnalysisNow() {
+
+        if (analysisRunning || items.isEmpty()) {
+            return
+        }
+
+        analysisRunning = true
+
+        message =
+            "🤖 تحلیل واچ‌لیست در حال اجراست..."
+
+        WatchlistWorkScheduler.runNow(
+            context
+        )
+
+        scope.launch {
+
+            /*
+             * Worker در پس‌زمینه اجرا می‌شود.
+             * چند بار نتیجه ذخیره‌شده بررسی می‌شود تا
+             * بعد از پایان تحلیل، نتیجه جدید روی صفحه بیاید.
+             */
+            repeat(12) {
+
+                delay(2500)
+
+                reloadAnalysis()
+
+                val analyzedSymbols =
+                    analyses
+                        .map { it.symbol }
+                        .toSet()
+
+                val allAnalyzed =
+                    items.all {
+                        analyzedSymbols.contains(
+                            it.symbol
+                        )
+                    }
+
+                if (allAnalyzed) {
+
+                    analysisRunning = false
+
+                    message =
+                        "✅ تحلیل واچ‌لیست با موفقیت بروزرسانی شد."
+
+                    return@launch
+                }
+            }
+
+            reloadAnalysis()
+
+            analysisRunning = false
+
+            message =
+                "⏳ تحلیل در پس‌زمینه ادامه دارد؛ نتیجه به‌زودی نمایش داده می‌شود."
         }
     }
 
@@ -308,6 +373,7 @@ fun WatchlistPage(
                     },
                     enabled =
                         !loading &&
+                                !analysisRunning &&
                                 items.size <
                                 WatchlistRepository.MAX_ITEMS,
                     modifier = Modifier.fillMaxWidth()
@@ -345,35 +411,77 @@ fun WatchlistPage(
             modifier = Modifier.fillMaxWidth()
         ) {
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement =
-                    Arrangement.spacedBy(8.dp),
-                verticalAlignment =
-                    Alignment.CenterVertically
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
             ) {
 
-                Text(
-                    text = "📈 ارزهای من",
-                    style =
-                        MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(8.dp),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
 
-                OutlinedButton(
+                    Text(
+                        text = "📈 ارزهای من",
+                        style =
+                            MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    OutlinedButton(
+                        onClick = {
+                            refreshPrices()
+                            reloadAnalysis()
+                        },
+                        enabled =
+                            !loading &&
+                                    !analysisRunning &&
+                                    items.isNotEmpty()
+                    ) {
+
+                        if (loading) {
+
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .width(18.dp)
+                                    .height(18.dp),
+                                strokeWidth = 2.dp
+                            )
+
+                            Spacer(
+                                modifier =
+                                    Modifier.width(6.dp)
+                            )
+                        }
+
+                        Text(
+                            text =
+                                if (loading) {
+                                    "بروزرسانی..."
+                                } else {
+                                    "🔄 قیمت‌ها"
+                                }
+                        )
+                    }
+                }
+
+                Button(
                     onClick = {
-                        refreshPrices()
-                        reloadAnalysis()
+                        runAnalysisNow()
                     },
                     enabled =
                         !loading &&
-                                items.isNotEmpty()
+                                !analysisRunning &&
+                                items.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
 
-                    if (loading) {
+                    if (analysisRunning) {
 
                         CircularProgressIndicator(
                             modifier = Modifier
@@ -384,19 +492,26 @@ fun WatchlistPage(
 
                         Spacer(
                             modifier =
-                                Modifier.width(6.dp)
+                                Modifier.width(8.dp)
                         )
                     }
 
                     Text(
                         text =
-                            if (loading) {
-                                "بروزرسانی..."
+                            if (analysisRunning) {
+                                "🤖 در حال تحلیل..."
                             } else {
-                                "🔄 بروزرسانی"
+                                "🤖 تحلیل الآن"
                             }
                     )
                 }
+
+                Text(
+                    text =
+                        "تحلیل شامل قیمت، روند، جریان پول، اخبار و وضعیت بازار بیت‌کوین است.",
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
             }
         }
 
@@ -644,7 +759,7 @@ private fun WatchlistAnalysisCard(
 
                 Text(
                     text =
-                        "پس از اجرای تحلیل واچ‌لیست، نتیجه اینجا نمایش داده می‌شود.",
+                        "با زدن «تحلیل الآن» تحلیل جدید اجرا می‌شود.",
                     style =
                         MaterialTheme.typography.bodySmall
                 )
