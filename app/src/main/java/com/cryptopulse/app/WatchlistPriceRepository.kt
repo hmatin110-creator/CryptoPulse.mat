@@ -1,9 +1,13 @@
 package com.cryptopulse.app
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
+import org.json.JSONObject
 import retrofit2.Retrofit
-import retrofit2.converter.moshi.MoshiConverterFactory
+import retrofit2.http.GET
+import retrofit2.http.Query
 
 class WatchlistPriceRepository {
 
@@ -17,39 +21,106 @@ private val hosts = listOf(
     "https://api4.binance.com/"
 )
 
+private fun createApi(
+    host: String
+): RawWatchlistPriceApi {
+
+    return Retrofit.Builder()
+        .baseUrl(host)
+        .build()
+        .create(
+            RawWatchlistPriceApi::class.java
+        )
+}
+
 suspend fun getPrice(
     symbol: String
 ): Double? = withContext(Dispatchers.IO) {
 
-    val normalized = normalizeSymbol(symbol)
+    val normalized =
+        normalizeSymbol(symbol)
+
+    if (normalized.isBlank()) {
+        return@withContext null
+    }
 
     for (host in hosts) {
 
         try {
 
-            val api =
-                Retrofit.Builder()
-                    .baseUrl(host)
-                    .addConverterFactory(
-                        MoshiConverterFactory.create()
-                    )
-                    .build()
-                    .create(WatchlistPriceApi::class.java)
+            Log.d(
+                "Crypto110Price",
+                "Trying $host for $normalized"
+            )
 
             val response =
-                api.tickerPrice(normalized)
+                createApi(host)
+                    .tickerPrice(normalized)
+
+            val raw =
+                response.string()
+
+            Log.d(
+                "Crypto110Price",
+                "$host response: $raw"
+            )
+
+            if (raw.isBlank()) {
+                continue
+            }
+
+            val json =
+                JSONObject(raw)
+
+            val returnedSymbol =
+                json.optString(
+                    "symbol",
+                    ""
+                )
+
+            val priceText =
+                json.optString(
+                    "price",
+                    ""
+                )
 
             val price =
-                response.price.toDoubleOrNull()
+                priceText.toDoubleOrNull()
 
-            if (price != null && price > 0.0) {
+            if (
+                price != null &&
+                price > 0.0
+            ) {
+
+                Log.d(
+                    "Crypto110Price",
+                    "SUCCESS $normalized = $price"
+                )
+
                 return@withContext price
             }
 
-        } catch (_: Exception) {
-            // Try the next Binance host.
+            Log.w(
+                "Crypto110Price",
+                "Invalid price for $normalized. " +
+                    "symbol=$returnedSymbol " +
+                    "price=$priceText"
+            )
+
+        } catch (e: Exception) {
+
+            Log.w(
+                "Crypto110Price",
+                "Failed $host for $normalized: " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
         }
     }
+
+    Log.e(
+        "Crypto110Price",
+        "All Binance hosts failed for $normalized"
+    )
 
     return@withContext null
 }
@@ -59,15 +130,28 @@ suspend fun getPrices(
 ): Map<String, Double> =
     withContext(Dispatchers.IO) {
 
-        val result = LinkedHashMap<String, Double>()
+        val result =
+            LinkedHashMap<String, Double>()
 
-        symbols.take(WatchlistRepository.MAX_ITEMS)
+        symbols
+            .take(
+                WatchlistRepository.MAX_ITEMS
+            )
             .forEach { symbol ->
 
-                val price = getPrice(symbol)
+                val normalized =
+                    normalizeSymbol(symbol)
 
-                if (price != null) {
-                    result[normalizeSymbol(symbol)] = price
+                val price =
+                    getPrice(normalized)
+
+                if (
+                    price != null &&
+                    price > 0.0
+                ) {
+
+                    result[normalized] =
+                        price
                 }
             }
 
@@ -78,24 +162,27 @@ private fun normalizeSymbol(
     value: String
 ): String {
 
-    val symbol = value
-        .trim()
-        .uppercase()
-        .replace("/", "")
-        .replace("-", "")
-        .replace("_", "")
-        .replace(" ", "")
+    val symbol =
+        value
+            .trim()
+            .uppercase()
+            .replace("/", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
 
     if (symbol.isBlank()) {
         return ""
     }
 
     return when {
+
         symbol.endsWith("USDT") ->
             symbol
 
         symbol.endsWith("USD") ->
-            symbol.removeSuffix("USD") + "USDT"
+            symbol.removeSuffix("USD") +
+                "USDT"
 
         else ->
             symbol + "USDT"
@@ -104,7 +191,12 @@ private fun normalizeSymbol(
 
 }
 
-data class WatchlistPriceDto(
-val symbol: String,
-val price: String
-)
+private interface RawWatchlistPriceApi {
+
+@GET("api/v3/ticker/price")
+suspend fun tickerPrice(
+    @Query("symbol")
+    symbol: String
+): ResponseBody
+
+}
