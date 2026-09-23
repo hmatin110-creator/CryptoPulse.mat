@@ -1,6 +1,6 @@
 package com.cryptopulse.app
 
-import androidx.compose.foundation.horizontalScroll
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,56 +10,66 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-@Composable
+@androidx.compose.runtime.Composable
 fun WatchlistPage(
     onBackHome: () -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
 
-    val repository = remember {
-        WatchlistRepository(context)
-    }
+    val context =
+        androidx.compose.ui.platform.LocalContext.current
 
-    val analysisRepository = remember {
-        WatchlistAnalysisRepository(context)
-    }
+    val scope =
+        androidx.compose.runtime.rememberCoroutineScope()
 
-    val priceRepository = remember {
-        WatchlistPriceRepository()
-    }
+    val watchlistRepository =
+        remember {
+            WatchlistRepository(context)
+        }
+
+    val analysisRepository =
+        remember {
+            WatchlistAnalysisRepository(context)
+        }
+
+    val priceRepository =
+        remember {
+            WatchlistPriceRepository()
+        }
 
     var items by remember {
-        mutableStateOf(repository.getItems())
+        mutableStateOf(
+            watchlistRepository.getItems()
+        )
     }
 
     var analyses by remember {
-        mutableStateOf(analysisRepository.getAll())
+        mutableStateOf(
+            analysisRepository.getAll()
+        )
     }
 
     var symbolInput by remember {
@@ -83,58 +93,82 @@ fun WatchlistPage(
     }
 
     fun reloadAnalysis() {
-        analyses = analysisRepository.getAll()
+        analyses =
+            analysisRepository.getAll()
     }
 
     fun refreshPrices() {
-        if (loading || items.isEmpty()) {
+
+        if (loading) {
             return
         }
 
+        loading = true
+        message = ""
+
         scope.launch {
-            loading = true
-            message = "در حال بروزرسانی قیمت‌ها..."
 
             try {
+
+                val currentItems =
+                    watchlistRepository.getItems()
+
+                if (currentItems.isEmpty()) {
+                    items = emptyList()
+                    analyses =
+                        analysisRepository.getAll()
+                    return@launch
+                }
+
                 val prices =
                     priceRepository.getPrices(
-                        items.map { it.symbol }
+                        currentItems.map {
+                            it.symbol
+                        }
                     )
 
                 val now =
                     System.currentTimeMillis()
 
-                items.forEach { item ->
+                currentItems.forEach { item ->
 
-                    val currentPrice =
+                    val price =
                         prices[item.symbol]
 
-                    if (currentPrice != null) {
+                    if (
+                        price != null &&
+                        price > 0
+                    ) {
 
-                        repository.updateCurrentPrice(
+                        watchlistRepository.updateItem(
                             symbol = item.symbol,
-                            currentPrice = currentPrice,
-                            lastUpdated = now
+                            buyPrice = item.buyPrice,
+                            currentPrice = price,
+                            lastUpdated = now,
+                            alertTriggered = item.alertTriggered
                         )
                     }
                 }
 
-                items = repository.getItems()
+                items =
+                    watchlistRepository.getItems()
+
                 reloadAnalysis()
 
                 message =
                     if (prices.isEmpty()) {
-                        "قیمت‌ها دریافت نشدند."
+                        "قیمت‌ها دریافت نشدند"
                     } else {
-                        "قیمت‌ها بروزرسانی شدند."
+                        "قیمت‌ها به‌روزرسانی شدند"
                     }
 
             } catch (e: Exception) {
 
                 message =
-                    "خطا در بروزرسانی: ${e.message ?: "خطای نامشخص"}"
+                    "خطا در دریافت قیمت‌ها"
 
             } finally {
+
                 loading = false
             }
         }
@@ -142,14 +176,19 @@ fun WatchlistPage(
 
     fun runAnalysisNow() {
 
-        if (analysisRunning || items.isEmpty()) {
+        if (
+            analysisRunning ||
+            items.isEmpty()
+        ) {
             return
         }
 
         analysisRunning = true
-
         message =
-            "🤖 تحلیل واچ‌لیست در حال اجراست..."
+            "تحلیل واچ‌لیست شروع شد..."
+
+        val analysisStart =
+            System.currentTimeMillis()
 
         WatchlistWorkScheduler.runNow(
             context
@@ -157,37 +196,37 @@ fun WatchlistPage(
 
         scope.launch {
 
-            /*
-             * Worker در پس‌زمینه اجرا می‌شود.
-             * چند بار نتیجه ذخیره‌شده بررسی می‌شود تا
-             * بعد از پایان تحلیل، نتیجه جدید روی صفحه بیاید.
-             */
-            repeat(12) {
+            var completed = false
+
+            repeat(20) {
 
                 delay(2500)
 
                 reloadAnalysis()
 
-                val analyzedSymbols =
-                    analyses
-                        .map { it.symbol }
-                        .toSet()
+                val currentItems =
+                    watchlistRepository.getItems()
 
-                val allAnalyzed =
-                    items.all {
-                        analyzedSymbols.contains(
-                            it.symbol
-                        )
-                    }
+                val currentAnalyses =
+                    analysisRepository.getAll()
 
-                if (allAnalyzed) {
+                completed =
+                    currentItems.isNotEmpty() &&
+                        currentItems.all { item ->
 
-                    analysisRunning = false
+                            currentAnalyses
+                                .firstOrNull {
+                                    it.symbol ==
+                                        item.symbol
+                                }
+                                ?.lastAnalyzed
+                                ?.let {
+                                    it >= analysisStart
+                                } == true
+                        }
 
-                    message =
-                        "✅ تحلیل واچ‌لیست با موفقیت بروزرسانی شد."
-
-                    return@launch
+                if (completed) {
+                    return@repeat
                 }
             }
 
@@ -196,160 +235,183 @@ fun WatchlistPage(
             analysisRunning = false
 
             message =
-                "⏳ تحلیل در پس‌زمینه ادامه دارد؛ نتیجه به‌زودی نمایش داده می‌شود."
+                if (completed) {
+                    "✅ تحلیل واچ‌لیست با موفقیت به‌روزرسانی شد"
+                } else {
+                    "⏳ تحلیل در پس‌زمینه ادامه دارد؛ چند لحظه بعد دوباره صفحه را بررسی کن"
+                }
         }
     }
 
     fun addCoin() {
 
-        val normalized =
-            normalizeWatchlistSymbol(symbolInput)
+        val symbol =
+            symbolInput.trim()
 
         val buyPrice =
             buyPriceInput
                 .trim()
-                .replace(",", "")
-                .replace(" ", "")
+                .replace(",", ".")
                 .toDoubleOrNull()
 
-        when {
+        if (symbol.isBlank()) {
 
-            normalized.isBlank() -> {
-                message = "نماد ارز را وارد کنید."
-            }
+            message =
+                "نماد ارز را وارد کن"
 
-            buyPrice == null || buyPrice <= 0.0 -> {
-                message = "قیمت خرید معتبر وارد کنید."
-            }
+            return
+        }
 
-            items.size >= WatchlistRepository.MAX_ITEMS -> {
-                message =
-                    "حداکثر ۵ ارز می‌توانید در واچ‌لیست قرار دهید."
-            }
+        if (
+            buyPrice == null ||
+            buyPrice <= 0
+        ) {
 
-            items.any { it.symbol == normalized } -> {
-                message =
-                    "$normalized قبلاً در واچ‌لیست قرار دارد."
-            }
+            message =
+                "قیمت خرید معتبر نیست"
 
-            else -> {
+            return
+        }
 
-                val added =
-                    repository.addItem(
-                        symbol = normalized,
-                        buyPrice = buyPrice
-                    )
+        val added =
+            watchlistRepository.addItem(
+                symbol = symbol,
+                buyPrice = buyPrice
+            )
 
-                if (added) {
+        if (added) {
 
-                    items = repository.getItems()
+            symbolInput = ""
+            buyPriceInput = ""
 
-                    symbolInput = ""
-                    buyPriceInput = ""
+            items =
+                watchlistRepository.getItems()
 
-                    message =
-                        "$normalized با قیمت خرید ${formatWatchPrice(buyPrice)} ذخیره شد."
+            message =
+                "✅ ارز به واچ‌لیست اضافه شد"
 
-                    refreshPrices()
+        } else {
 
+            message =
+                if (
+                    watchlistRepository.isFull()
+                ) {
+                    "حداکثر ۵ ارز می‌توانی اضافه کنی"
                 } else {
-
-                    message =
-                        "امکان اضافه‌کردن این ارز وجود ندارد."
+                    "این ارز قبلاً در واچ‌لیست وجود دارد"
                 }
-            }
         }
     }
 
     fun removeCoin(symbol: String) {
 
-        repository.removeItem(symbol)
-        analysisRepository.remove(symbol)
+        watchlistRepository.removeItem(
+            symbol
+        )
 
-        items = repository.getItems()
-        reloadAnalysis()
+        analysisRepository.remove(
+            symbol
+        )
+
+        items =
+            watchlistRepository.getItems()
+
+        analyses =
+            analysisRepository.getAll()
 
         message =
-            "$symbol از واچ‌لیست حذف شد."
+            "ارز از واچ‌لیست حذف شد"
     }
 
     LaunchedEffect(Unit) {
 
-        items = repository.getItems()
+        items =
+            watchlistRepository.getItems()
+
         reloadAnalysis()
 
-        if (items.isNotEmpty()) {
-            refreshPrices()
-        }
+        refreshPrices()
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
     ) {
 
-        Card(
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier =
+                Modifier.fillMaxWidth(),
+            verticalAlignment =
+                Alignment.CenterVertically
         ) {
 
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+            OutlinedButton(
+                onClick = onBackHome
             ) {
-
-                Text(
-                    text = "⭐ واچ‌لیست",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text =
-                        "حداکثر ۵ ارز را با قیمت خرید خودت ذخیره کن.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-
-                Text(
-                    text =
-                        "قیمت خرید دستی است و با قیمت بازار جایگزین نمی‌شود.",
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text("← خانه")
             }
+
+            Spacer(
+                modifier =
+                    Modifier.width(12.dp)
+            )
+
+            Text(
+                text = "⭐ واچ‌لیست",
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight =
+                    FontWeight.Bold
+            )
         }
 
+        Spacer(
+            modifier =
+                Modifier.height(16.dp)
+        )
+
         Card(
-            modifier = Modifier.fillMaxWidth()
+            modifier =
+                Modifier.fillMaxWidth()
         ) {
 
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier =
+                    Modifier.padding(14.dp)
             ) {
 
                 Text(
                     text = "➕ افزودن ارز",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(10.dp)
                 )
 
                 OutlinedTextField(
                     value = symbolInput,
                     onValueChange = {
-                        symbolInput =
-                            it.uppercase(Locale.US)
-                                .replace(" ", "")
+                        symbolInput = it
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    singleLine = true,
                     label = {
                         Text("نماد ارز")
                     },
                     placeholder = {
-                        Text("مثلاً BTCUSDT")
-                    },
-                    singleLine = true
+                        Text("BTC یا BTCUSDT")
+                    }
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(8.dp)
                 )
 
                 OutlinedTextField(
@@ -357,341 +419,224 @@ fun WatchlistPage(
                     onValueChange = {
                         buyPriceInput = it
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions =
+                        KeyboardOptions(
+                            keyboardType =
+                                KeyboardType.Decimal
+                        ),
                     label = {
                         Text("قیمت خرید")
-                    },
-                    placeholder = {
-                        Text("مثلاً 100000")
-                    },
-                    singleLine = true
+                    }
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(10.dp)
                 )
 
                 Button(
                     onClick = {
                         addCoin()
                     },
-                    enabled =
-                        !loading &&
-                                !analysisRunning &&
-                                items.size <
-                                WatchlistRepository.MAX_ITEMS,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier =
+                        Modifier.fillMaxWidth()
                 ) {
-                    Text("ذخیره در واچ‌لیست")
+                    Text("افزودن به واچ‌لیست")
                 }
-
-                Text(
-                    text =
-                        "${items.size} از ${WatchlistRepository.MAX_ITEMS} ارز استفاده شده",
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
+
+        Spacer(
+            modifier =
+                Modifier.height(12.dp)
+        )
 
         if (message.isNotBlank()) {
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                modifier =
+                    Modifier.fillMaxWidth()
             ) {
 
                 Text(
                     text = message,
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall
+                    modifier =
+                        Modifier.padding(12.dp)
                 )
             }
+
+            Spacer(
+                modifier =
+                    Modifier.height(12.dp)
+            )
         }
 
         Card(
-            modifier = Modifier.fillMaxWidth()
+            modifier =
+                Modifier.fillMaxWidth()
         ) {
 
             Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement =
-                    Arrangement.spacedBy(8.dp)
+                modifier =
+                    Modifier.padding(14.dp)
             ) {
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier =
+                        Modifier.fillMaxWidth(),
                     horizontalArrangement =
-                        Arrangement.spacedBy(8.dp),
+                        Arrangement.SpaceBetween,
                     verticalAlignment =
                         Alignment.CenterVertically
                 ) {
 
                     Text(
                         text = "📈 ارزهای من",
-                        style =
-                            MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
+                        fontWeight =
+                            FontWeight.Bold
                     )
 
                     OutlinedButton(
                         onClick = {
                             refreshPrices()
-                            reloadAnalysis()
                         },
                         enabled =
                             !loading &&
-                                    !analysisRunning &&
-                                    items.isNotEmpty()
+                                !analysisRunning
                     ) {
 
-                        if (loading) {
-
-                            CircularProgressIndicator(
-                                modifier = Modifier
-                                    .width(18.dp)
-                                    .height(18.dp),
-                                strokeWidth = 2.dp
-                            )
-
-                            Spacer(
-                                modifier =
-                                    Modifier.width(6.dp)
-                            )
-                        }
-
                         Text(
-                            text =
-                                if (loading) {
-                                    "بروزرسانی..."
-                                } else {
-                                    "🔄 قیمت‌ها"
-                                }
+                            if (loading) {
+                                "در حال دریافت..."
+                            } else {
+                                "🔄 قیمت‌ها"
+                            }
                         )
                     }
                 }
+
+                Spacer(
+                    modifier =
+                        Modifier.height(8.dp)
+                )
 
                 Button(
                     onClick = {
                         runAnalysisNow()
                     },
+                    modifier =
+                        Modifier.fillMaxWidth(),
                     enabled =
-                        !loading &&
-                                !analysisRunning &&
-                                items.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth()
+                        items.isNotEmpty() &&
+                            !analysisRunning &&
+                            !loading
                 ) {
 
-                    if (analysisRunning) {
-
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .width(18.dp)
-                                .height(18.dp),
-                            strokeWidth = 2.dp
-                        )
-
-                        Spacer(
-                            modifier =
-                                Modifier.width(8.dp)
-                        )
-                    }
-
                     Text(
-                        text =
-                            if (analysisRunning) {
-                                "🤖 در حال تحلیل..."
-                            } else {
-                                "🤖 تحلیل الآن"
-                            }
+                        if (analysisRunning) {
+                            "🤖 در حال تحلیل..."
+                        } else {
+                            "🤖 تحلیل الآن"
+                        }
                     )
                 }
 
+                Spacer(
+                    modifier =
+                        Modifier.height(8.dp)
+                )
+
                 Text(
                     text =
-                        "تحلیل شامل قیمت، روند، جریان پول، اخبار و وضعیت بازار بیت‌کوین است.",
+                        "تحلیل واچ‌لیست هر ۶ ساعت انجام می‌شود و افت ۵٪ هشدار ایجاد می‌کند.",
                     style =
                         MaterialTheme.typography.bodySmall
                 )
             }
         }
 
+        Spacer(
+            modifier =
+                Modifier.height(12.dp)
+        )
+
         if (items.isEmpty()) {
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme.colorScheme.surfaceVariant
-                )
+                modifier =
+                    Modifier.fillMaxWidth()
             ) {
 
                 Text(
                     text =
-                        "هنوز ارزی به واچ‌لیست اضافه نکرده‌ای.",
-                    modifier = Modifier.padding(16.dp)
+                        "هنوز ارزی به واچ‌لیست اضافه نشده است.",
+                    modifier =
+                        Modifier.padding(16.dp)
                 )
             }
 
         } else {
 
-            items.forEach { item ->
+            LazyColumn(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                verticalArrangement =
+                    Arrangement.spacedBy(12.dp)
+            ) {
 
-                WatchlistItemCard(
-                    item = item,
-                    analysis =
-                        analyses.firstOrNull {
-                            it.symbol == item.symbol
-                        },
-                    onRemove = {
-                        removeCoin(item.symbol)
+                items(
+                    items = items,
+                    key = {
+                        it.symbol
                     }
-                )
+                ) { item ->
+
+                    val analysis =
+                        analyses.firstOrNull {
+                            it.symbol ==
+                                item.symbol
+                        }
+
+                    WatchlistItemCard(
+                        item = item,
+                        analysis = analysis,
+                        onRemove = {
+                            removeCoin(
+                                item.symbol
+                            )
+                        }
+                    )
+                }
             }
         }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor =
-                    MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement =
-                    Arrangement.spacedBy(7.dp)
-            ) {
-
-                Text(
-                    text = "🤖 تحلیل خودکار واچ‌لیست",
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text =
-                        "تحلیل هر ارز به صورت جداگانه انجام می‌شود و نتیجه در واچ‌لیست ذخیره می‌شود."
-                )
-
-                Text(
-                    text =
-                        "🟢 پیشنهاد خرید  |  🚀 پیشنهاد خرید قوی"
-                )
-
-                Text(
-                    text =
-                        "🔴 پیشنهاد فروش  |  🔥 پیشنهاد فروش قوی"
-                )
-
-                Text(
-                    text =
-                        "تحلیل خودکار هر ۶ ساعت اجرا می‌شود.",
-                    style =
-                        MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor =
-                    MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement =
-                    Arrangement.spacedBy(5.dp)
-            ) {
-
-                Text(
-                    text = "🔔 هشدار کاهش ۵٪",
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    text =
-                        "اگر قیمت فعلی به ۵٪ یا بیشتر پایین‌تر از قیمت خرید برسد، نوتیفیکیشن هشدار فعال می‌شود."
-                )
-
-                Text(
-                    text =
-                        "هشدار پس از عبور قیمت از محدوده ۵٪ دوباره آماده فعال‌شدن می‌شود.",
-                    style =
-                        MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
-        OutlinedButton(
-            onClick = onBackHome,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("← بازگشت به خانه")
-        }
-
-        Spacer(
-            modifier = Modifier.height(12.dp)
-        )
     }
 }
 
-@Composable
+@androidx.compose.runtime.Composable
 private fun WatchlistItemCard(
     item: WatchlistItem,
     analysis: WatchlistAnalysisSnapshot?,
     onRemove: () -> Unit
 ) {
 
-    val currentPrice =
-        item.currentPrice
-
-    val changePercent =
-        if (
-            currentPrice != null &&
-            item.buyPrice > 0.0
-        ) {
-            (
-                (currentPrice - item.buyPrice) /
-                        item.buyPrice
-                ) * 100.0
-        } else {
-            null
-        }
-
-    val status =
-        when {
-
-            changePercent == null ->
-                "⏳ قیمت فعلی دریافت نشده"
-
-            changePercent <= -5.0 ->
-                "🔴 کاهش ۵٪ یا بیشتر"
-
-            changePercent < 0.0 ->
-                "🟠 در محدوده کاهش"
-
-            changePercent >= 5.0 ->
-                "🟢 رشد ۵٪ یا بیشتر"
-
-            else ->
-                "🟡 نزدیک قیمت خرید"
-        }
-
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement =
-                Arrangement.spacedBy(8.dp)
+            modifier =
+                Modifier.padding(14.dp)
         ) {
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier =
+                    Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
@@ -700,8 +645,8 @@ private fun WatchlistItemCard(
                     text = item.symbol,
                     style =
                         MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
+                    fontWeight =
+                        FontWeight.Bold
                 )
 
                 OutlinedButton(
@@ -711,72 +656,30 @@ private fun WatchlistItemCard(
                 }
             }
 
-            WatchlistTable(
-                item = item,
-                changePercent = changePercent,
-                status = status
+            Spacer(
+                modifier =
+                    Modifier.height(10.dp)
             )
 
-            WatchlistAnalysisCard(
-                analysis = analysis
-            )
-        }
-    }
-}
-
-@Composable
-private fun WatchlistAnalysisCard(
-    analysis: WatchlistAnalysisSnapshot?
-) {
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor =
-                MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement =
-                Arrangement.spacedBy(6.dp)
-        ) {
-
-            Text(
-                text = "🤖 سیگنال تحلیل",
-                fontWeight = FontWeight.Bold
+            WatchlistPriceTable(
+                item = item
             )
 
-            if (analysis == null) {
+            if (analysis != null) {
 
-                Text(
-                    text =
-                        "هنوز تحلیل خودکار برای این ارز ذخیره نشده است.",
-                    style =
-                        MaterialTheme.typography.bodySmall
+                Spacer(
+                    modifier =
+                        Modifier.height(12.dp)
                 )
 
-                Text(
-                    text =
-                        "با زدن «تحلیل الآن» تحلیل جدید اجرا می‌شود.",
-                    style =
-                        MaterialTheme.typography.bodySmall
+                Divider()
+
+                Spacer(
+                    modifier =
+                        Modifier.height(12.dp)
                 )
 
-            } else {
-
-                Text(
-                    text =
-                        normalizeAnalysisSignal(
-                            analysis.signal
-                        ),
-                    style =
-                        MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-
-                WatchlistAnalysisTable(
+                WatchlistAnalysisCard(
                     analysis = analysis
                 )
             }
@@ -784,270 +687,344 @@ private fun WatchlistAnalysisCard(
     }
 }
 
-@Composable
+@androidx.compose.runtime.Composable
+private fun WatchlistPriceTable(
+    item: WatchlistItem
+) {
+
+    val current =
+        item.currentPrice
+
+    val profitPercent =
+        if (
+            current != null &&
+            item.buyPrice > 0
+        ) {
+            (
+                (current - item.buyPrice) /
+                    item.buyPrice
+                ) * 100.0
+        } else {
+            null
+        }
+
+    TableRow(
+        "قیمت خرید",
+        formatPrice(item.buyPrice)
+    )
+
+    TableRow(
+        "قیمت فعلی",
+        current?.let {
+            formatPrice(it)
+        } ?: "-"
+    )
+
+    TableRow(
+        "سود / زیان",
+        profitPercent?.let {
+            formatPercent(it)
+        } ?: "-"
+    )
+
+    TableRow(
+        "وضعیت هشدار",
+        if (item.alertTriggered) {
+            "🔴 افت بیش از ۵٪"
+        } else {
+            "🟢 عادی"
+        }
+    )
+}
+
+@androidx.compose.runtime.Composable
+private fun WatchlistAnalysisCard(
+    analysis: WatchlistAnalysisSnapshot
+) {
+
+    val signal =
+        normalizeAnalysisSignal(
+            analysis.signal
+        )
+
+    Text(
+        text = "🤖 تحلیل هوشمند",
+        fontWeight =
+            FontWeight.Bold
+    )
+
+    Spacer(
+        modifier =
+            Modifier.height(8.dp)
+    )
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth()
+    ) {
+
+        Text(
+            text = signal,
+            modifier =
+                Modifier.padding(12.dp),
+            style =
+                MaterialTheme.typography.titleMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+    }
+
+    Spacer(
+        modifier =
+            Modifier.height(10.dp)
+    )
+
+    WatchlistAnalysisTable(
+        analysis = analysis
+    )
+
+    if (
+        analysis.entryLow != null &&
+        analysis.entryHigh != null &&
+        analysis.stopLoss != null &&
+        analysis.tp1 != null &&
+        analysis.tp2 != null
+    ) {
+
+        Spacer(
+            modifier =
+                Modifier.height(12.dp)
+        )
+
+        Divider()
+
+        Spacer(
+            modifier =
+                Modifier.height(12.dp)
+        )
+
+        TradePlanCard(
+            analysis = analysis
+        )
+    }
+
+    Spacer(
+        modifier =
+            Modifier.height(10.dp)
+    )
+
+    Text(
+        text =
+            if (analysis.finalAnalysis.isBlank()) {
+                "تحلیل نهایی ثبت نشده است"
+            } else {
+                analysis.finalAnalysis
+            },
+        style =
+            MaterialTheme.typography.bodySmall
+    )
+}
+
+@androidx.compose.runtime.Composable
 private fun WatchlistAnalysisTable(
     analysis: WatchlistAnalysisSnapshot
 ) {
 
-    val columns =
-        listOf(
-            "مورد" to 145.dp,
-            "مقدار" to 190.dp
+    TableRow(
+        "امتیاز",
+        "${analysis.score}/100"
+    )
+
+    TableRow(
+        "اعتماد",
+        "${analysis.confidence}/100"
+    )
+
+    TableRow(
+        "احتمال پامپ",
+        "${analysis.pump}/100"
+    )
+
+    TableRow(
+        "احتمال دامپ",
+        "${analysis.dump}/100"
+    )
+
+    TableRow(
+        "جریان پول",
+        "${analysis.moneyFlow}/100"
+    )
+
+    TableRow(
+        "روند",
+        "${analysis.trend}/100"
+    )
+
+    TableRow(
+        "اخبار",
+        "${analysis.news}/100"
+    )
+
+    TableRow(
+        "آخرین تحلیل",
+        formatDateTime(
+            analysis.lastAnalyzed
         )
-
-    val scrollState =
-        rememberScrollState()
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(
-                scrollState
-            )
-    ) {
-
-        Column(
-            modifier = Modifier.width(335.dp)
-        ) {
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "مورد",
-                        "مقدار"
-                    ),
-                bold = true
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "🎯 امتیاز",
-                        "${analysis.score}/100"
-                    ),
-                bold = true
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "🛡 اطمینان",
-                        "${analysis.confidence}%"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "🚀 احتمال رشد",
-                        "${analysis.pump}%"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📉 احتمال ریزش",
-                        "${analysis.dump}%"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "💰 جریان پول",
-                        "${analysis.moneyFlow}/100"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📈 روند",
-                        "${analysis.trend}/100"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📰 اخبار",
-                        "${analysis.news}/100"
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "🕒 آخرین تحلیل",
-                        formatLastUpdated(
-                            analysis.lastAnalyzed
-                        )
-                    )
-            )
-        }
-    }
-
-    if (analysis.finalAnalysis.isNotBlank()) {
-
-        Spacer(
-            modifier = Modifier.height(6.dp)
-        )
-
-        Text(
-            text =
-                analysis.finalAnalysis,
-            style =
-                MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium
-        )
-    }
+    )
 }
 
-@Composable
-private fun WatchlistTable(
-    item: WatchlistItem,
-    changePercent: Double?,
-    status: String
+@androidx.compose.runtime.Composable
+private fun TradePlanCard(
+    analysis: WatchlistAnalysisSnapshot
 ) {
 
-    val columns =
-        listOf(
-            "مورد" to 145.dp,
-            "مقدار" to 190.dp
-        )
-
-    val scrollState =
-        rememberScrollState()
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(
-                scrollState
+    val isSell =
+        analysis.signal.contains(
+            "SELL",
+            ignoreCase = true
+        ) ||
+            analysis.signal.contains(
+                "فروش"
             )
+
+    val entryLow =
+        analysis.entryLow
+
+    val entryHigh =
+        analysis.entryHigh
+
+    val stopLoss =
+        analysis.stopLoss
+
+    val tp1 =
+        analysis.tp1
+
+    val tp2 =
+        analysis.tp2
+
+    val riskReward =
+        analysis.riskReward
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth()
     ) {
 
         Column(
-            modifier = Modifier.width(335.dp)
+            modifier =
+                Modifier.padding(12.dp)
         ) {
 
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "مورد",
-                        "مقدار"
-                    ),
-                bold = true
+            Text(
+                text =
+                    if (isSell) {
+                        "📉 برنامه معامله فروش"
+                    } else {
+                        "📈 برنامه معامله خرید"
+                    },
+                fontWeight =
+                    FontWeight.Bold,
+                style =
+                    MaterialTheme.typography.titleMedium
             )
 
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "💰 قیمت خرید",
-                        formatWatchPrice(
-                            item.buyPrice
-                        )
+            Spacer(
+                modifier =
+                    Modifier.height(10.dp)
+            )
+
+            TableRow(
+                "ورود",
+                if (
+                    entryLow != null &&
+                    entryHigh != null
+                ) {
+                    "${formatPrice(entryLow)} تا ${formatPrice(entryHigh)}"
+                } else {
+                    "-"
+                }
+            )
+
+            TableRow(
+                "حد ضرر",
+                stopLoss?.let {
+                    formatPrice(it)
+                } ?: "-"
+            )
+
+            if (isSell) {
+
+                TableRow(
+                    "هدف ۱",
+                    tp1?.let {
+                        formatPrice(it)
+                    } ?: "-"
+                )
+
+                TableRow(
+                    "هدف ۲",
+                    tp2?.let {
+                        formatPrice(it)
+                    } ?: "-"
+                )
+
+            } else {
+
+                TableRow(
+                    "هدف ۱",
+                    tp1?.let {
+                        formatPrice(it)
+                    } ?: "-"
+                )
+
+                TableRow(
+                    "هدف ۲",
+                    tp2?.let {
+                        formatPrice(it)
+                    } ?: "-"
+                )
+            }
+
+            TableRow(
+                "ریسک به بازده",
+                riskReward?.let {
+                    String.format(
+                        Locale.US,
+                        "%.2f",
+                        it
                     )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📈 قیمت فعلی",
-                        item.currentPrice?.let {
-                            formatWatchPrice(it)
-                        } ?: "دریافت نشده"
-                    ),
-                bold = true
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📊 سود / زیان",
-                        changePercent?.let {
-                            formatPercent(it)
-                        } ?: "—"
-                    ),
-                bold = true
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "📌 وضعیت",
-                        status
-                    )
-            )
-
-            WatchlistTableRow(
-                cells = columns,
-                values =
-                    listOf(
-                        "🕒 آخرین بروزرسانی",
-                        formatLastUpdated(
-                            item.lastUpdated
-                        )
-                    )
+                } ?: "-"
             )
         }
     }
 }
 
-@Composable
-private fun WatchlistTableRow(
-    cells: List<Pair<String, androidx.compose.ui.unit.Dp>>,
-    values: List<String>,
-    bold: Boolean = false
+@androidx.compose.runtime.Composable
+private fun TableRow(
+    title: String,
+    value: String
 ) {
 
     Row(
-        modifier = Modifier.fillMaxWidth()
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    vertical = 4.dp
+                ),
+        horizontalArrangement =
+            Arrangement.SpaceBetween
     ) {
 
-        cells.forEachIndexed { index, (_, width) ->
+        Text(
+            text = title,
+            fontWeight =
+                FontWeight.Medium
+        )
 
-            Box(
-                modifier = Modifier
-                    .width(width)
-                    .padding(1.dp)
-                    .padding(
-                        horizontal = 7.dp,
-                        vertical = 8.dp
-                    )
-            ) {
-
-                Text(
-                    text =
-                        values.getOrElse(index) {
-                            ""
-                        },
-                    style =
-                        MaterialTheme.typography.bodySmall,
-                    fontWeight =
-                        if (bold) {
-                            FontWeight.Bold
-                        } else {
-                            FontWeight.Normal
-                        }
-                )
-            }
-        }
+        Text(
+            text = value
+        )
     }
 }
 
@@ -1058,80 +1035,56 @@ private fun normalizeAnalysisSignal(
     val value =
         signal.trim()
 
-    val lower =
-        value.lowercase(Locale.US)
-
     return when {
 
-        lower.contains("خرید") &&
-                lower.contains("قوی") ->
+        value.contains(
+            "STRONG BUY",
+            ignoreCase = true
+        ) ||
+            value.contains(
+                "خرید قوی"
+            ) ->
             "🚀 پیشنهاد خرید قوی"
 
-        lower.contains("خرید") ->
+        value.contains(
+            "BUY",
+            ignoreCase = true
+        ) ||
+            value.contains(
+                "خرید"
+            ) ->
             "🟢 پیشنهاد خرید"
 
-        lower.contains("فروش") &&
-                lower.contains("قوی") ->
+        value.contains(
+            "STRONG SELL",
+            ignoreCase = true
+        ) ||
+            value.contains(
+                "فروش قوی"
+            ) ->
             "🔥 پیشنهاد فروش قوی"
 
-        lower.contains("فروش") ->
+        value.contains(
+            "SELL",
+            ignoreCase = true
+        ) ||
+            value.contains(
+                "فروش"
+            ) ->
             "🔴 پیشنهاد فروش"
 
-        value.contains("خرید") &&
-                value.contains("قوی") ->
-            "🚀 پیشنهاد خرید قوی"
-
-        value.contains("خرید") ->
-            "🟢 پیشنهاد خرید"
-
-        value.contains("فروش") &&
-                value.contains("قوی") ->
-            "🔥 پیشنهاد فروش قوی"
-
-        value.contains("فروش") ->
-            "🔴 پیشنهاد فروش"
-
-        value.isBlank() ->
+        else ->
             "🟡 نگهداری / انتظار"
-
-        else ->
-            value
     }
 }
 
-private fun normalizeWatchlistSymbol(
-    value: String
-): String {
-
-    val symbol =
-        value.trim()
-            .uppercase(Locale.US)
-            .replace("/", "")
-            .replace("-", "")
-            .replace("_", "")
-            .replace(" ", "")
-
-    if (symbol.isBlank()) {
-        return ""
-    }
-
-    return when {
-
-        symbol.endsWith("USDT") ->
-            symbol
-
-        symbol.endsWith("USD") ->
-            symbol.removeSuffix("USD") +
-                    "USDT"
-
-        else ->
-            symbol + "USDT"
-    }
-}
-
-private fun formatWatchPrice(
+private fun formatPrice(
     value: Double
 ): String {
+
+    if (!value.isFinite()) {
+        return "-"
+    }
 
     return when {
 
@@ -1149,6 +1102,13 @@ private fun formatWatchPrice(
                 value
             )
 
+        value >= 0.01 ->
+            String.format(
+                Locale.US,
+                "%.6f",
+                value
+            )
+
         else ->
             String.format(
                 Locale.US,
@@ -1162,35 +1122,25 @@ private fun formatPercent(
     value: Double
 ): String {
 
-    val sign =
-        if (value > 0.0) "+" else ""
-
-    return sign +
-            String.format(
-                Locale.US,
-                "%.2f%%",
-                value
-            )
+    return String.format(
+        Locale.US,
+        "%.2f%%",
+        value
+    )
 }
 
-private fun formatLastUpdated(
+private fun formatDateTime(
     timestamp: Long
 ): String {
 
-    if (timestamp <= 0L) {
-        return "هنوز بروزرسانی نشده"
+    if (timestamp <= 0) {
+        return "-"
     }
 
-    val date =
-        java.text.SimpleDateFormat(
-            "yyyy/MM/dd HH:mm",
-            Locale.US
-        ).apply {
-            timeZone =
-                java.util.TimeZone.getDefault()
-        }
-
-    return date.format(
+    return java.text.SimpleDateFormat(
+        "yyyy/MM/dd HH:mm",
+        Locale.US
+    ).format(
         java.util.Date(timestamp)
     )
 }
