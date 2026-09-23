@@ -7,7 +7,13 @@ interface WatchlistPriceApi {
 
 @GET("api/v3/ticker/price")
 suspend fun tickerPrice(
-    @Query("symbol") symbol: String
+    @Query("symbol")
+    symbol: String
 ): WatchlistPriceDto
 
 }
+
+data class WatchlistPriceDto(
+val symbol: String,
+val price: String
+)
