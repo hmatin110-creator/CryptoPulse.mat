@@ -17,25 +17,23 @@ import java.util.Locale
 class WatchlistAlertWorker(
 appContext: Context,
 workerParams: WorkerParameters
-) : CoroutineWorker(
-appContext,
-workerParams
-) {
+) : CoroutineWorker(appContext, workerParams) {
 
 override suspend fun doWork(): Result =
     withContext(Dispatchers.IO) {
-
         try {
-
             val context = applicationContext
 
             createNotificationChannel(context)
 
-            val repository =
+            val watchlistRepository =
                 WatchlistRepository(context)
 
+            val analysisRepository =
+                WatchlistAnalysisRepository(context)
+
             val items =
-                repository.getItems()
+                watchlistRepository.getItems()
 
             if (items.isEmpty()) {
                 return@withContext Result.success()
@@ -43,6 +41,12 @@ override suspend fun doWork(): Result =
 
             val priceRepository =
                 WatchlistPriceRepository()
+
+            val liveRepository =
+                LiveRepository()
+
+            val newsRepository =
+                NewsRepository()
 
             val prices =
                 priceRepository.getPrices(
@@ -52,6 +56,9 @@ override suspend fun doWork(): Result =
             val now =
                 System.currentTimeMillis()
 
+            /*
+             * ابتدا قیمت‌ها و هشدار کاهش ۵٪ بررسی می‌شوند.
+             */
             items.forEach { item ->
 
                 val currentPrice =
@@ -60,7 +67,10 @@ override suspend fun doWork(): Result =
 
                 val dropPercent =
                     (
-                        (currentPrice - item.buyPrice) /
+                        (
+                            currentPrice -
+                                item.buyPrice
+                            ) /
                             item.buyPrice
                         ) * 100.0
 
@@ -70,7 +80,8 @@ override suspend fun doWork(): Result =
                 val shouldAlert =
                     currentPrice <= alertLimit
 
-                if (shouldAlert &&
+                if (
+                    shouldAlert &&
                     !item.alertTriggered
                 ) {
 
@@ -82,7 +93,7 @@ override suspend fun doWork(): Result =
                         dropPercent = dropPercent
                     )
 
-                    repository.updateItem(
+                    watchlistRepository.updateItem(
                         symbol = item.symbol,
                         buyPrice = item.buyPrice,
                         currentPrice = currentPrice,
@@ -92,15 +103,10 @@ override suspend fun doWork(): Result =
 
                 } else {
 
-                    /*
-                     * وقتی قیمت دوباره بالاتر از
-                     * محدوده ۵٪ افت رفت، هشدار بعدی
-                     * برای افت جدید دوباره فعال می‌شود.
-                     */
                     val resetAlert =
                         currentPrice > alertLimit
 
-                    repository.updateItem(
+                    watchlistRepository.updateItem(
                         symbol = item.symbol,
                         buyPrice = item.buyPrice,
                         currentPrice = currentPrice,
@@ -112,6 +118,90 @@ override suspend fun doWork(): Result =
                                 item.alertTriggered
                             }
                     )
+                }
+            }
+
+            /*
+             * تحلیل خودکار واچ‌لیست.
+             *
+             * هر ارز به صورت مستقل تحلیل می‌شود تا خطای
+             * یک ارز باعث توقف تحلیل بقیه نشود.
+             */
+            items.forEach { item ->
+
+                runCatching {
+
+                    val snapshot =
+                        liveRepository.loadForScan(
+                            item.symbol
+                        )
+
+                    if (
+                        snapshot.candles.size < 60
+                    ) {
+                        return@runCatching
+                    }
+
+                    val news =
+                        newsRepository.load(
+                            item.symbol
+                        )
+
+                    val flow =
+                        MarketFlowData(
+                            openInterest =
+                                snapshot.openInterest,
+
+                            fundingRate =
+                                snapshot.fundingRate,
+
+                            openInterestHistory =
+                                snapshot.openInterestHistory,
+
+                            longShortHistory =
+                                snapshot.longShortHistory,
+
+                            takerVolumeHistory =
+                                snapshot.takerVolumeHistory
+                        )
+
+                    val result =
+                        AnalysisEngine.analyze(
+                            candles =
+                                snapshot.candles,
+
+                            flow =
+                                flow,
+
+                            newsScore =
+                                news.score,
+
+                            newsConfidence =
+                                news.confidence,
+
+                            btcCandles =
+                                snapshot.btcCandles
+                        )
+
+                    analysisRepository.saveFromResult(
+                        symbol =
+                            item.symbol,
+
+                        result =
+                            result,
+
+                        signal =
+                            result.signal,
+
+                        analyzedAt =
+                            now
+                    )
+
+                }.onFailure {
+                    /*
+                     * خطای یک ارز نباید تحلیل سایر
+                     * ارزهای واچ‌لیست را متوقف کند.
+                     */
                 }
             }
 
@@ -139,14 +229,17 @@ private fun showDropNotification(
         if (
             context.checkSelfPermission(
                 Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
+            ) !=
+            PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
     }
 
     val manager =
-        NotificationManagerCompat.from(context)
+        NotificationManagerCompat.from(
+            context
+        )
 
     val notification =
         NotificationCompat.Builder(
@@ -166,27 +259,39 @@ private fun showDropNotification(
                 NotificationCompat.BigTextStyle()
                     .bigText(
                         buildString {
+
                             append(
                                 "قیمت خرید: "
                             )
+
                             append(
-                                formatPrice(buyPrice)
+                                formatPrice(
+                                    buyPrice
+                                )
                             )
+
                             append("\n")
 
                             append(
                                 "قیمت فعلی: "
                             )
+
                             append(
-                                formatPrice(currentPrice)
+                                formatPrice(
+                                    currentPrice
+                                )
                             )
+
                             append("\n")
 
                             append(
                                 "سود/زیان: "
                             )
+
                             append(
-                                formatPercent(dropPercent)
+                                formatPercent(
+                                    dropPercent
+                                )
                             )
                         }
                     )
@@ -242,9 +347,8 @@ private fun createNotificationChannel(
 
 private fun formatPrice(
     value: Double
-): String {
-
-    return when {
+): String =
+    when {
 
         value >= 1000.0 ->
             String.format(
@@ -267,18 +371,15 @@ private fun formatPrice(
                 value
             )
     }
-}
 
 private fun formatPercent(
     value: Double
-): String {
-
-    return String.format(
+): String =
+    String.format(
         Locale.US,
         "%.2f%%",
         value
     )
-}
 
 companion object {
 
