@@ -61,7 +61,9 @@ class WatchlistAlertWorker(
                     NewsRepository()
 
                 /*
-                 * دریافت قیمت تمام ارزهای واچ‌لیست
+                 * =====================================================
+                 * دریافت قیمت فعلی
+                 * =====================================================
                  */
                 val prices =
                     priceRepository.getPrices(
@@ -70,6 +72,10 @@ class WatchlistAlertWorker(
                         }
                     )
 
+                /*
+                 * اگر هیچ قیمت دریافت نشد،
+                 * اجازه می‌دهیم WorkManager دوباره تلاش کند.
+                 */
                 if (prices.isEmpty()) {
                     return@withContext Result.retry()
                 }
@@ -79,8 +85,25 @@ class WatchlistAlertWorker(
 
                 /*
                  * =====================================================
-                 * بروزرسانی قیمت و بررسی افت ۵٪
+                 * قیمت + هشدار افت ۵٪
                  * =====================================================
+                 *
+                 * قانون:
+                 *
+                 * اگر:
+                 *
+                 * (قیمت فعلی - قیمت خرید) / قیمت خرید * 100
+                 *
+                 * <= -5%
+                 *
+                 * باشد، هشدار ارسال می‌شود.
+                 *
+                 * نکته مهم:
+                 *
+                 * alertTriggered دیگر مانع هشدار دوره بعد نیست.
+                 *
+                 * بنابراین اگر قیمت همچنان -22% باشد،
+                 * در اجرای ۶ ساعت بعد نیز دوباره هشدار می‌آید.
                  */
                 items.forEach { item ->
 
@@ -88,11 +111,14 @@ class WatchlistAlertWorker(
                         prices[item.symbol]
                             ?: return@forEach
 
-                    if (item.buyPrice <= 0.0) {
+                    if (
+                        item.buyPrice <= 0.0 ||
+                        currentPrice <= 0.0
+                    ) {
                         return@forEach
                     }
 
-                    val dropPercent =
+                    val pnlPercent =
                         (
                             (
                                 currentPrice -
@@ -102,57 +128,23 @@ class WatchlistAlertWorker(
                         ) * 100.0
 
                     /*
-                     * مثال:
+                     * منفی ۵ درصد یا بیشتر:
                      *
-                     * قیمت خرید = 100
-                     * حد هشدار = 95
+                     * -5%
+                     * -10%
+                     * -22%
                      *
-                     * اگر قیمت فعلی <= 95 باشد:
-                     * هشدار باید فعال شود.
+                     * همگی هشدار می‌دهند.
                      */
-                    val alertLimit =
-                        item.buyPrice * 0.95
-
                     val shouldAlert =
-                        currentPrice <=
-                            alertLimit
+                        pnlPercent <= -5.0
 
-                    /*
-                     * =================================================
-                     * افت ۵٪
-                     * =================================================
-                     */
-                    if (
-                        shouldAlert &&
-                        !item.alertTriggered
-                    ) {
+                    if (shouldAlert) {
 
-                        /*
-                         * مهم:
-                         *
-                         * تابع Notification اکنون Boolean برمی‌گرداند.
-                         *
-                         * فقط اگر ارسال Notification امکان‌پذیر باشد
-                         * alertTriggered را true می‌کنیم.
-                         *
-                         * اگر مجوز Notification وجود نداشته باشد،
-                         * false برمی‌گردد و در اجرای بعدی دوباره تلاش می‌شود.
-                         */
-                        val notificationSent =
-                            showDropNotification(
-                                context =
-                                    context,
-                                symbol =
-                                    item.symbol,
-                                buyPrice =
-                                    item.buyPrice,
-                                currentPrice =
-                                    currentPrice,
-                                dropPercent =
-                                    dropPercent
-                            )
+                        showDropNotification(
+                            context =
+                                context,
 
-                        watchlistRepository.updateItem(
                             symbol =
                                 item.symbol,
 
@@ -162,58 +154,49 @@ class WatchlistAlertWorker(
                             currentPrice =
                                 currentPrice,
 
-                            lastUpdated =
-                                now,
-
-                            alertTriggered =
-                                if (
-                                    notificationSent
-                                ) {
-                                    true
-                                } else {
-                                    false
-                                }
-                        )
-
-                    } else {
-
-                        /*
-                         * وقتی قیمت دوباره بالاتر از ۵٪ افت برگشت،
-                         * هشدار برای افت بعدی دوباره فعال می‌شود.
-                         */
-                        val resetAlert =
-                            currentPrice >
-                                alertLimit
-
-                        watchlistRepository.updateItem(
-                            symbol =
-                                item.symbol,
-
-                            buyPrice =
-                                item.buyPrice,
-
-                            currentPrice =
-                                currentPrice,
-
-                            lastUpdated =
-                                now,
-
-                            alertTriggered =
-                                if (
-                                    resetAlert
-                                ) {
-                                    false
-                                } else {
-                                    item.alertTriggered
-                                }
+                            pnlPercent =
+                                pnlPercent
                         )
                     }
+
+                    /*
+                     * قیمت فعلی همیشه ذخیره می‌شود.
+                     *
+                     * alertTriggered را برای سازگاری با
+                     * ساختار فعلی WatchlistRepository نگه می‌داریم،
+                     * ولی دیگر از آن برای جلوگیری از Notification
+                     * استفاده نمی‌کنیم.
+                     */
+                    watchlistRepository.updateItem(
+                        symbol =
+                            item.symbol,
+
+                        buyPrice =
+                            item.buyPrice,
+
+                        currentPrice =
+                            currentPrice,
+
+                        lastUpdated =
+                            now,
+
+                        alertTriggered =
+                            shouldAlert
+                    )
                 }
 
                 /*
                  * =====================================================
                  * بروزرسانی تحلیل مستقل هر ارز
                  * =====================================================
+                 *
+                 * هر ۶ ساعت:
+                 *
+                 * قیمت ← بروزرسانی
+                 * تحلیل ← بروزرسانی
+                 * اخبار ← بروزرسانی
+                 * جریان پول ← بروزرسانی
+                 * برنامه معامله ← بروزرسانی
                  */
                 items.forEach { item ->
 
@@ -224,6 +207,9 @@ class WatchlistAlertWorker(
                                 item.symbol
                             )
 
+                        /*
+                         * برای تحلیل حداقل ۶۰ کندل لازم است.
+                         */
                         if (
                             snapshot.candles.size <
                             60
@@ -254,6 +240,9 @@ class WatchlistAlertWorker(
                                     snapshot.takerVolumeHistory
                             )
 
+                        /*
+                         * تحلیل فقط از موتور اصلی برنامه.
+                         */
                         val result =
                             AnalysisEngine.analyze(
                                 candles =
@@ -272,6 +261,9 @@ class WatchlistAlertWorker(
                                     snapshot.btcCandles
                             )
 
+                        /*
+                         * فقط تحلیل همان ارز ذخیره می‌شود.
+                         */
                         analysisRepository.saveFromResult(
                             symbol =
                                 item.symbol,
@@ -288,7 +280,7 @@ class WatchlistAlertWorker(
 
                     }.onFailure {
                         /*
-                         * خطای یک ارز نباید تحلیل ارزهای دیگر
+                         * خطای یک ارز نباید ارزهای دیگر
                          * را متوقف کند.
                          */
                     }
@@ -298,33 +290,31 @@ class WatchlistAlertWorker(
 
             } catch (_: Exception) {
 
+                /*
+                 * خطای کلی:
+                 * WorkManager دوباره تلاش می‌کند.
+                 */
                 Result.retry()
             }
         }
 
     /*
      * =============================================================
-     * Notification
+     * ارسال Notification
      * =============================================================
-     *
-     * نتیجه:
-     *
-     * true  = Notification ارسال شد / سیستم اجازه ارسال داد
-     * false = Notification ارسال نشد
      */
     private fun showDropNotification(
         context: Context,
         symbol: String,
         buyPrice: Double,
         currentPrice: Double,
-        dropPercent: Double
-    ): Boolean {
+        pnlPercent: Double
+    ) {
 
         /*
          * Android 13+
          *
-         * اگر مجوز Notification وجود نداشته باشد،
-         * نباید alertTriggered را true کنیم.
+         * بدون این مجوز Notification نمایش داده نمی‌شود.
          */
         if (
             Build.VERSION.SDK_INT >=
@@ -337,8 +327,7 @@ class WatchlistAlertWorker(
                 ) !=
                 PackageManager.PERMISSION_GRANTED
             ) {
-
-                return false
+                return
             }
         }
 
@@ -348,21 +337,17 @@ class WatchlistAlertWorker(
             )
 
         /*
-         * بررسی می‌کنیم Notificationهای برنامه
-         * توسط کاربر کاملاً خاموش نشده باشند.
+         * اگر Notificationهای برنامه خاموش باشند،
+         * ارسال ممکن نیست.
          */
         if (
             !manager.areNotificationsEnabled()
         ) {
-
-            return false
+            return
         }
 
         /*
-         * در Android 8+ کانال باید فعال باشد.
-         *
-         * اگر کاربر کانال را روی NONE گذاشته باشد،
-         * هشدار نباید به عنوان ارسال‌شده ثبت شود.
+         * بررسی کانال Notification
          */
         if (
             Build.VERSION.SDK_INT >=
@@ -384,8 +369,7 @@ class WatchlistAlertWorker(
                 channel.importance ==
                 NotificationManager.IMPORTANCE_NONE
             ) {
-
-                return false
+                return
             }
         }
 
@@ -398,15 +382,27 @@ class WatchlistAlertWorker(
                     android.R.drawable.ic_dialog_alert
                 )
                 .setContentTitle(
-                    "🔴 هشدار واچ‌لیست: $symbol"
+                    "🔴 هشدار افت واچ‌لیست: $symbol"
                 )
                 .setContentText(
-                    "قیمت بیش از ۵٪ کاهش یافته است."
+                    "زیان فعلی: ${formatPercent(pnlPercent)}"
                 )
                 .setStyle(
                     NotificationCompat.BigTextStyle()
                         .bigText(
                             buildString {
+
+                                append(
+                                    "⚠️ افت قیمت از قیمت خرید به ۵٪ یا بیشتر رسیده است."
+                                )
+
+                                append("\n\n")
+
+                                append(
+                                    "ارز: $symbol"
+                                )
+
+                                append("\n")
 
                                 append(
                                     "قیمت خرید: "
@@ -438,8 +434,14 @@ class WatchlistAlertWorker(
 
                                 append(
                                     formatPercent(
-                                        dropPercent
+                                        pnlPercent
                                     )
+                                )
+
+                                append("\n\n")
+
+                                append(
+                                    "بررسی بعدی طبق برنامه پس‌زمینه انجام می‌شود."
                                 )
                             }
                         )
@@ -453,23 +455,42 @@ class WatchlistAlertWorker(
                 .setAutoCancel(
                     true
                 )
+                .setVibrate(
+                    longArrayOf(
+                        0,
+                        500,
+                        300,
+                        500
+                    )
+                )
                 .build()
 
-        return try {
+        try {
 
+            /*
+             * شناسه ثابت برای هر ارز:
+             * هر اجرای جدید Notification همان ارز را
+             * به‌روزرسانی می‌کند و چند اعلان انباشته
+             * برای یک اجرای واحد ایجاد نمی‌کند.
+             */
             manager.notify(
                 symbol.hashCode(),
                 notification
             )
 
-            true
-
         } catch (_: Exception) {
-
-            false
+            /*
+             * خطای Notification نباید باعث شکست
+             * کل Worker شود.
+             */
         }
     }
 
+    /*
+     * =============================================================
+     * Notification Channel
+     * =============================================================
+     */
     private fun createNotificationChannel(
         context: Context
     ) {
@@ -492,10 +513,7 @@ class WatchlistAlertWorker(
             )
 
         /*
-         * اگر کانال قبلاً ساخته شده باشد،
-         * تنظیمات آن را دوباره تغییر نمی‌دهیم؛
-         * Android اجازه تغییر importance کانال موجود
-         * را از داخل برنامه نمی‌دهد.
+         * اگر قبلاً ساخته شده، همان کانال را نگه می‌داریم.
          */
         if (existingChannel != null) {
             return
@@ -504,12 +522,12 @@ class WatchlistAlertWorker(
         val channel =
             NotificationChannel(
                 CHANNEL_ID,
-                "هشدار واچ‌لیست",
+                "هشدار افت قیمت واچ‌لیست",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
 
                 description =
-                    "هشدار کاهش ۵ درصدی قیمت ارزهای واچ‌لیست"
+                    "هشدار زمانی که قیمت فعلی ۵٪ یا بیشتر از قیمت خرید پایین‌تر باشد"
 
                 enableVibration(
                     true
@@ -521,6 +539,11 @@ class WatchlistAlertWorker(
         )
     }
 
+    /*
+     * =============================================================
+     * Price formatting
+     * =============================================================
+     */
     private fun formatPrice(
         value: Double
     ): String {
@@ -553,6 +576,11 @@ class WatchlistAlertWorker(
         }
     }
 
+    /*
+     * =============================================================
+     * Percentage formatting
+     * =============================================================
+     */
     private fun formatPercent(
         value: Double
     ): String {
@@ -572,5 +600,5 @@ class WatchlistAlertWorker(
         private const val CHANNEL_ID =
             "watchlist_price_alerts"
     }
-}
+} 
   
