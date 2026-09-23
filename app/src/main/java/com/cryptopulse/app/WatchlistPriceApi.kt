@@ -1,60 +1,18 @@
-@androidx.compose.runtime.Composable
-private fun WatchlistPriceTable(
-item: WatchlistItem
-) {
+package com.cryptopulse.app
 
-val current =
-    item.currentPrice
+import retrofit2.http.GET
+import retrofit2.http.Query
 
-val profitPercent =
-    if (
-        current != null &&
-        item.buyPrice > 0
-    ) {
-        (
-            (current - item.buyPrice) /
-                item.buyPrice
-            ) * 100.0
-    } else {
-        null
-    }
+interface WatchlistPriceApi {
 
-val isDropAlert =
-    profitPercent != null &&
-        profitPercent <= -5.0
-
-TableRow(
-    "قیمت خرید",
-    formatPrice(item.buyPrice)
-)
-
-TableRow(
-    "قیمت فعلی",
-    current?.let {
-        formatPrice(it)
-    } ?: "-"
-)
-
-TableRow(
-    "سود / زیان",
-    profitPercent?.let {
-        formatPercent(it)
-    } ?: "-"
-)
-
-TableRow(
-    "وضعیت هشدار",
-    when {
-        isDropAlert ->
-            "🔴 هشدار افت ۵٪ یا بیشتر"
-
-        profitPercent != null ->
-            "🟢 هشدار عادی"
-
-        else ->
-            "⚪ قیمت فعلی نامشخص"
-    }
-)
-
+    @GET("api/v3/ticker/price")
+    suspend fun tickerPrice(
+        @Query("symbol")
+        symbol: String
+    ): WatchlistPriceDto
 }
-  
+
+data class WatchlistPriceDto(
+    val symbol: String,
+    val price: String
+)
