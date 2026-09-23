@@ -11,8 +11,3 @@ suspend fun tickerPrice(
 ): WatchlistPriceDto
 
 }
-
-data class WatchlistPriceDto(
-val symbol: String,
-val price: String
-)
