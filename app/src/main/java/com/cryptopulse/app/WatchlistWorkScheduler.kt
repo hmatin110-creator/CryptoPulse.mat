@@ -2,6 +2,7 @@ package com.cryptopulse.app
 
 import android.content.Context
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -19,18 +20,20 @@ object WatchlistWorkScheduler {
         context: Context
     ) {
 
+        val appContext =
+            context.applicationContext
+
         val request =
             PeriodicWorkRequestBuilder<WatchlistAlertWorker>(
                 6,
                 TimeUnit.HOURS
-            )
-                .build()
+            ).build()
 
         WorkManager
-            .getInstance(context.applicationContext)
+            .getInstance(appContext)
             .enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
     }
@@ -44,10 +47,12 @@ object WatchlistWorkScheduler {
                 .build()
 
         WorkManager
-            .getInstance(context.applicationContext)
+            .getInstance(
+                context.applicationContext
+            )
             .enqueueUniqueWork(
                 MANUAL_WORK_NAME,
-                androidx.work.ExistingWorkPolicy.REPLACE,
+                ExistingWorkPolicy.REPLACE,
                 request
             )
     }
@@ -56,16 +61,17 @@ object WatchlistWorkScheduler {
         context: Context
     ) {
 
-        WorkManager
-            .getInstance(context.applicationContext)
-            .cancelUniqueWork(
-                WORK_NAME
+        val workManager =
+            WorkManager.getInstance(
+                context.applicationContext
             )
 
-        WorkManager
-            .getInstance(context.applicationContext)
-            .cancelUniqueWork(
-                MANUAL_WORK_NAME
-            )
+        workManager.cancelUniqueWork(
+            WORK_NAME
+        )
+
+        workManager.cancelUniqueWork(
+            MANUAL_WORK_NAME
+        )
     }
 }
